@@ -17,10 +17,14 @@
   },
   {
     "content": "Phase 2: Design Agent + Full App Development",
-    "status": "in_progress"
+    "status": "completed"
   },
   {
     "content": "Phase 2: End-to-End Testing via Testing Agent",
+    "status": "in_progress"
+  },
+  {
+    "content": "Phase 2: All user stories covered in Development and testing",
     "status": "pending"
   },
   {
