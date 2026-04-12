@@ -1151,7 +1151,8 @@ function SignalsPage() {
       });
       toast.success('Test signal sent');
       setTestDialogOpen(false);
-      loadSignals();
+      // Small delay before refreshing to ensure dialog closes properly
+      setTimeout(() => loadSignals(), 300);
     } catch (err) {
       toast.error('Failed to send test signal');
     }

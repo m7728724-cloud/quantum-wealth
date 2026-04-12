@@ -187,6 +187,7 @@ async def get_me(request: Request):
 @app.post("/api/portfolio/resolve-isin")
 async def resolve_isin_endpoint(request: Request, data: dict = Body(...)):
     """Resolve an ISIN code to human-readable name via MOEX API"""
+    require_auth(request)
     isin = data.get("isin", "").strip().upper()
     if not isin:
         raise HTTPException(status_code=400, detail="ISIN code required")
@@ -201,6 +202,7 @@ async def resolve_isin_endpoint(request: Request, data: dict = Body(...)):
 @app.post("/api/portfolio/holdings")
 async def add_holding(request: Request, data: HoldingCreate):
     """Add a portfolio holding - auto-resolves ISIN via MOEX"""
+    require_auth(request)
     isin = data.isin.strip().upper()
     
     # Resolve ISIN
@@ -243,6 +245,7 @@ async def add_holding(request: Request, data: HoldingCreate):
 @app.get("/api/portfolio/holdings")
 async def get_holdings(request: Request):
     """Get all portfolio holdings with resolved names"""
+    require_auth(request)
     holdings = list(db.holdings.find().sort("created_at", DESCENDING))
     return serialize_doc(holdings)
 
@@ -250,6 +253,7 @@ async def get_holdings(request: Request):
 @app.delete("/api/portfolio/holdings/{holding_id}")
 async def delete_holding(holding_id: str, request: Request):
     """Delete a holding"""
+    require_auth(request)
     try:
         result = db.holdings.delete_one({"_id": ObjectId(holding_id)})
         if result.deleted_count == 0:
@@ -265,6 +269,7 @@ async def delete_holding(holding_id: str, request: Request):
 @app.post("/api/news/refresh")
 async def refresh_news(request: Request):
     """Fetch latest news from RSS feeds and cache"""
+    require_auth(request)
     articles = fetch_all_feeds(max_per_feed=10)
     
     # Cache in MongoDB
@@ -282,6 +287,7 @@ async def refresh_news(request: Request):
 @app.get("/api/news")
 async def get_news(request: Request, region: Optional[str] = None, limit: int = 30):
     """Get cached news articles"""
+    require_auth(request)
     query = {}
     if region:
         query["region"] = region
@@ -309,6 +315,7 @@ async def get_news(request: Request, region: Optional[str] = None, limit: int = 
 @app.post("/api/ai/portfolio-insight")
 async def get_portfolio_insight(request: Request, data: AIInsightRequest = None):
     """Generate AI-powered portfolio analysis"""
+    require_auth(request)
     if data is None:
         data = AIInsightRequest()
     
@@ -390,6 +397,7 @@ async def receive_webhook(request: Request, data: WebhookSignal = None):
 @app.get("/api/signals")
 async def get_signals(request: Request, limit: int = 50):
     """Get received TradingView signals"""
+    require_auth(request)
     signals = list(
         db.signals.find()
         .sort("received_at", DESCENDING)
@@ -401,6 +409,7 @@ async def get_signals(request: Request, limit: int = 50):
 @app.delete("/api/signals/{signal_id}")
 async def delete_signal(signal_id: str, request: Request):
     """Delete a signal"""
+    require_auth(request)
     try:
         result = db.signals.delete_one({"_id": ObjectId(signal_id)})
         if result.deleted_count == 0:
@@ -416,6 +425,7 @@ async def delete_signal(signal_id: str, request: Request):
 @app.post("/api/trades")
 async def create_trade(request: Request, data: TradeCreate):
     """Log a binary options trade"""
+    require_auth(request)
     trade = {
         "asset": data.asset,
         "direction": data.direction.value,
@@ -447,6 +457,7 @@ async def create_trade(request: Request, data: TradeCreate):
 @app.get("/api/trades")
 async def get_trades(request: Request, result_filter: Optional[str] = None, limit: int = 100):
     """Get trade journal entries"""
+    require_auth(request)
     query = {}
     if result_filter:
         query["result"] = result_filter.upper()
@@ -462,6 +473,7 @@ async def get_trades(request: Request, result_filter: Optional[str] = None, limi
 @app.put("/api/trades/{trade_id}")
 async def update_trade(trade_id: str, request: Request, data: TradeUpdate):
     """Update trade result (Win/Loss/Draw)"""
+    require_auth(request)
     try:
         update = {
             "result": data.result.value,
@@ -489,6 +501,7 @@ async def update_trade(trade_id: str, request: Request, data: TradeUpdate):
 @app.get("/api/trades/stats")
 async def get_trade_stats(request: Request):
     """Get trading statistics with detailed analytics"""
+    require_auth(request)
     total = db.trades.count_documents({})
     wins = db.trades.count_documents({"result": "WIN"})
     losses = db.trades.count_documents({"result": "LOSS"})
@@ -566,6 +579,7 @@ async def get_trade_stats(request: Request):
 @app.get("/api/portfolio/allocation")
 async def get_portfolio_allocation(request: Request):
     """Get portfolio allocation breakdown by asset class"""
+    require_auth(request)
     pipeline = [
         {"$group": {
             "_id": "$asset_class",
@@ -584,6 +598,7 @@ async def get_portfolio_allocation(request: Request):
 @app.get("/api/memory")
 async def get_memory_entries(request: Request, limit: int = 50):
     """Get memory log entries"""
+    require_auth(request)
     memories = list(
         db.memory.find()
         .sort("created_at", DESCENDING)
@@ -595,6 +610,7 @@ async def get_memory_entries(request: Request, limit: int = 50):
 @app.post("/api/memory")
 async def create_memory_entry(request: Request, data: MemoryLogCreate):
     """Log a memory entry"""
+    require_auth(request)
     entry = log_memory(
         db,
         interaction_type=data.interaction_type,
@@ -608,6 +624,7 @@ async def create_memory_entry(request: Request, data: MemoryLogCreate):
 @app.get("/api/safeguards")
 async def get_safeguard_rules(request: Request):
     """Get all safeguard rules"""
+    require_auth(request)
     rules = list(
         db.safeguard_rules.find()
         .sort("created_at", DESCENDING)
@@ -618,6 +635,7 @@ async def get_safeguard_rules(request: Request):
 @app.post("/api/safeguards/generate")
 async def generate_safeguards(request: Request):
     """AI-analyze losses and generate new safeguard rules"""
+    require_auth(request)
     # Get loss trades
     loss_trades = list(db.trades.find({"result": "LOSS"}).sort("created_at", DESCENDING).limit(50))
     
@@ -648,6 +666,7 @@ async def generate_safeguards(request: Request):
 @app.put("/api/safeguards/{rule_id}/toggle")
 async def toggle_safeguard(rule_id: str, request: Request):
     """Toggle a safeguard rule active/inactive"""
+    require_auth(request)
     try:
         rule = db.safeguard_rules.find_one({"_id": ObjectId(rule_id)})
         if not rule:
@@ -670,6 +689,7 @@ async def toggle_safeguard(rule_id: str, request: Request):
 @app.delete("/api/safeguards/{rule_id}")
 async def delete_safeguard(rule_id: str, request: Request):
     """Delete a safeguard rule"""
+    require_auth(request)
     try:
         result = db.safeguard_rules.delete_one({"_id": ObjectId(rule_id)})
         if result.deleted_count == 0:
@@ -682,6 +702,7 @@ async def delete_safeguard(rule_id: str, request: Request):
 @app.post("/api/safeguards/manual")
 async def add_manual_safeguard(request: Request, data: SafeguardRuleCreate):
     """Add a manual safeguard rule"""
+    require_auth(request)
     doc = {
         "rule_text": data.rule_text,
         "severity": data.severity.value,
@@ -703,6 +724,7 @@ async def add_manual_safeguard(request: Request, data: SafeguardRuleCreate):
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats(request: Request):
     """Get dashboard summary stats"""
+    require_auth(request)
     holdings_count = db.holdings.count_documents({})
     trades_count = db.trades.count_documents({})
     signals_count = db.signals.count_documents({})
