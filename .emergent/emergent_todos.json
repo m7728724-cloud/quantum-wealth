@@ -1,0 +1,34 @@
+[
+  {
+    "content": "Phase 1: POC - MOEX ISS ISIN Resolution",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: POC - Claude AI Integration via Emergent Key",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: POC - RSS News Aggregation",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 1: POC - Core Orchestration (end-to-end chain)",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 2: Design Agent + Full App Development",
+    "status": "in_progress"
+  },
+  {
+    "content": "Phase 2: End-to-End Testing via Testing Agent",
+    "status": "pending"
+  },
+  {
+    "content": "Phase 3: Feature Expansion (Adaptive Memory, Analytics)",
+    "status": "pending"
+  },
+  {
+    "content": "Phase 4: Security & Auth (JWT + Rate Limiting + Seeded Admin)",
+    "status": "pending"
+  }
+]
