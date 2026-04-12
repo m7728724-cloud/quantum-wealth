@@ -6,9 +6,14 @@ import {
   Radar, NotebookPen, ShieldAlert, Settings, LogOut, Zap,
   RefreshCw, Plus, Trash2, TrendingUp, TrendingDown,
   AlertTriangle, CheckCircle, Clock, Search, ExternalLink,
-  ChevronDown, X, Activity, Eye, ArrowUpRight, ArrowDownRight
+  ChevronDown, X, Activity, Eye, ArrowUpRight, ArrowDownRight,
+  BarChart3, PieChart as PieChartIcon, Target
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+  PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip as RTooltip, ResponsiveContainer, Legend, AreaChart, Area
+} from 'recharts';
 import { authAPI, portfolioAPI, newsAPI, aiAPI, signalsAPI, tradesAPI, safeguardsAPI, dashboardAPI } from './lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Button } from './components/ui/button';
@@ -224,23 +229,51 @@ function StatusBar({ stats }) {
   );
 }
 
+// Chart colors
+const CHART_COLORS = ['#22D3EE', '#22C55E', '#EF4444', '#F59E0B', '#60A5FA', '#A78BFA', '#FB923C'];
+const CHART_THEME = {
+  grid: 'rgba(148,163,184,0.12)',
+  axis: 'rgba(148,163,184,0.55)',
+  tooltip_bg: '#0B1220',
+  tooltip_border: '#1B2A3A',
+  tooltip_text: '#E5E7EB'
+};
+
+const CustomTooltipStyle = {
+  backgroundColor: CHART_THEME.tooltip_bg,
+  border: `1px solid ${CHART_THEME.tooltip_border}`,
+  borderRadius: '6px',
+  color: CHART_THEME.tooltip_text,
+  fontSize: '12px',
+  fontFamily: 'IBM Plex Mono, monospace',
+  padding: '8px 12px'
+};
+
 // ============================================
 // Dashboard Page
 // ============================================
 function DashboardPage() {
   const [stats, setStats] = useState(null);
+  const [tradeStats, setTradeStats] = useState(null);
+  const [allocation, setAllocation] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadStats();
+    loadAll();
   }, []);
 
-  const loadStats = async () => {
+  const loadAll = async () => {
     try {
-      const res = await dashboardAPI.getStats();
-      setStats(res.data);
+      const [statsRes, tradeRes, allocRes] = await Promise.all([
+        dashboardAPI.getStats(),
+        tradesAPI.getStats(),
+        portfolioAPI.getAllocation().catch(() => ({ data: [] }))
+      ]);
+      setStats(statsRes.data);
+      setTradeStats(tradeRes.data);
+      setAllocation(allocRes.data);
     } catch (err) {
-      console.error('Stats error:', err);
+      console.error('Dashboard load error:', err);
     } finally {
       setLoading(false);
     }
@@ -248,8 +281,35 @@ function DashboardPage() {
 
   if (loading) return <div className="flex items-center justify-center h-full"><div className="spinner" /></div>;
 
+  // Prepare allocation chart data
+  const allocationData = allocation.map((a, i) => ({
+    name: a._id || 'Other',
+    value: a.count,
+    fill: CHART_COLORS[i % CHART_COLORS.length]
+  }));
+
+  // Prepare asset win/loss chart data
+  const assetChartData = (tradeStats?.asset_breakdown || []).map(a => ({
+    name: a._id,
+    wins: a.wins,
+    losses: a.losses,
+    winRate: a.total > 0 ? Math.round((a.wins / a.total) * 100) : 0
+  }));
+
+  // Prepare direction chart data
+  const directionData = (tradeStats?.direction_breakdown || []).map(d => ({
+    name: d._id,
+    wins: d.wins,
+    losses: d.losses,
+    total: d.total
+  }));
+
+  // Recent results for area chart
+  const recentChart = tradeStats?.recent_chart || [];
+
   return (
     <div className="space-y-4">
+      {/* Stat Cards Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="Portfolio Holdings" value={stats?.holdings || 0} icon={Briefcase} color="cyan" />
         <StatCard label="Total Trades" value={stats?.trades || 0} icon={NotebookPen} color="blue" />
@@ -257,16 +317,18 @@ function DashboardPage() {
         <StatCard label="Active Safeguards" value={stats?.active_rules || 0} icon={ShieldAlert} color="amber" />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      {/* Charts Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        {/* Performance Summary */}
         <div className="terminal-panel">
           <div className="panel-header">
             <div className="panel-header-title">
-              <TrendingUp className="w-4 h-4 text-green-400" />
-              <span>Performance Summary</span>
+              <BarChart3 className="w-4 h-4 text-cyan-400" />
+              <span>Performance</span>
             </div>
           </div>
           <div className="panel-body">
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-3 gap-4 mb-4">
               <div className="text-center">
                 <div className="text-2xl font-mono-data text-green-400 tabular-nums">{stats?.wins || 0}</div>
                 <div className="text-xs text-muted-foreground mt-1">WINS</div>
@@ -281,14 +343,14 @@ function DashboardPage() {
               </div>
             </div>
             {(stats?.wins > 0 || stats?.losses > 0) && (
-              <div className="mt-4">
+              <div>
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-muted-foreground">Win Rate</span>
                   <span className="text-xs font-mono-data">{stats?.win_rate}%</span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-secondary overflow-hidden">
                   <div
-                    className="h-full rounded-full transition-all duration-500"
+                    className="h-full rounded-full"
                     style={{
                       width: `${stats?.win_rate || 0}%`,
                       background: stats?.win_rate >= 50 ? '#22C55E' : '#EF4444'
@@ -297,9 +359,139 @@ function DashboardPage() {
                 </div>
               </div>
             )}
+            {/* Recent results mini chart */}
+            {recentChart.length > 0 && (
+              <div className="mt-4">
+                <div className="text-xs text-muted-foreground mb-2">Recent Results</div>
+                <ResponsiveContainer width="100%" height={80}>
+                  <AreaChart data={recentChart}>
+                    <defs>
+                      <linearGradient id="resultGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#22D3EE" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#22D3EE" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <Area type="stepAfter" dataKey="result" stroke="#22D3EE" fill="url(#resultGrad)" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
         </div>
 
+        {/* Portfolio Allocation Pie */}
+        <div className="terminal-panel">
+          <div className="panel-header">
+            <div className="panel-header-title">
+              <PieChartIcon className="w-4 h-4 text-cyan-400" />
+              <span>Portfolio Allocation</span>
+            </div>
+          </div>
+          <div className="panel-body flex items-center justify-center">
+            {allocationData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={200}>
+                <PieChart>
+                  <Pie
+                    data={allocationData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={80}
+                    paddingAngle={3}
+                    dataKey="value"
+                  >
+                    {allocationData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.fill} />
+                    ))}
+                  </Pie>
+                  <RTooltip contentStyle={CustomTooltipStyle} />
+                  <Legend
+                    wrapperStyle={{ fontSize: '11px', fontFamily: 'IBM Plex Mono', color: '#94A3B8' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="empty-state py-8">
+                <PieChartIcon className="w-8 h-8 opacity-30" />
+                <p className="text-xs text-muted-foreground">Add holdings to see allocation</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Asset Win/Loss Chart */}
+        <div className="terminal-panel">
+          <div className="panel-header">
+            <div className="panel-header-title">
+              <Target className="w-4 h-4 text-cyan-400" />
+              <span>Win/Loss by Asset</span>
+            </div>
+          </div>
+          <div className="panel-body flex items-center justify-center">
+            {assetChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={assetChartData} barGap={2}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} />
+                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_THEME.axis }} />
+                  <YAxis tick={{ fontSize: 10, fill: CHART_THEME.axis }} />
+                  <RTooltip contentStyle={CustomTooltipStyle} />
+                  <Bar dataKey="wins" fill="#22C55E" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="losses" fill="#EF4444" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="empty-state py-8">
+                <BarChart3 className="w-8 h-8 opacity-30" />
+                <p className="text-xs text-muted-foreground">Log trades to see analytics</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {/* Direction Stats */}
+        <div className="terminal-panel">
+          <div className="panel-header">
+            <div className="panel-header-title">
+              <Activity className="w-4 h-4 text-blue-400" />
+              <span>Direction Analysis</span>
+            </div>
+          </div>
+          <div className="panel-body">
+            {directionData.length > 0 ? (
+              <div className="space-y-3">
+                {directionData.map((d) => {
+                  const wr = d.total > 0 ? Math.round((d.wins / d.total) * 100) : 0;
+                  return (
+                    <div key={d.name} className="flex items-center gap-3">
+                      <Badge className={`text-xs w-14 justify-center ${d.name === 'CALL' ? 'badge-buy' : 'badge-sell'}`}>
+                        {d.name}
+                      </Badge>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-mono-data">{d.wins}W / {d.losses}L</span>
+                          <span className="text-xs font-mono-data">{wr}%</span>
+                        </div>
+                        <div className="w-full h-1.5 rounded-full bg-secondary overflow-hidden">
+                          <div className="h-full rounded-full" style={{ width: `${wr}%`, background: wr >= 50 ? '#22C55E' : '#EF4444' }} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="empty-state py-6">
+                <Activity className="w-8 h-8 opacity-30" />
+                <p className="text-xs text-muted-foreground">Trade data required</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* System Status */}
         <div className="terminal-panel">
           <div className="panel-header">
             <div className="panel-header-title">
@@ -1120,6 +1312,7 @@ function TradesPage() {
   const [tradeAmount, setTradeAmount] = useState('');
   const [tradeNotes, setTradeNotes] = useState('');
   const [filter, setFilter] = useState('all');
+  const [activeTab, setActiveTab] = useState('journal');
 
   useEffect(() => {
     loadTrades();
@@ -1175,6 +1368,20 @@ function TradesPage() {
       toast.error('Failed to update trade');
     }
   };
+
+  const assetChartData = (stats?.asset_breakdown || []).map(a => ({
+    name: a._id,
+    wins: a.wins,
+    losses: a.losses,
+    winRate: a.total > 0 ? Math.round((a.wins / a.total) * 100) : 0
+  }));
+
+  const expiryChartData = (stats?.expiry_breakdown || []).map(e => ({
+    name: `${e._id}s`,
+    wins: e.wins,
+    losses: e.losses,
+    total: e.total
+  }));
 
   return (
     <div className="terminal-panel h-full flex flex-col">
@@ -1269,75 +1476,188 @@ function TradesPage() {
         </div>
       )}
 
-      <ScrollArea className="flex-1">
-        <div className="panel-body">
-          {loading ? (
-            <div className="flex items-center justify-center py-12"><div className="spinner" /></div>
-          ) : trades.length === 0 ? (
-            <div className="empty-state">
-              <NotebookPen className="w-10 h-10 opacity-30" />
-              <p className="text-sm">No trades logged</p>
-              <p className="text-xs text-muted-foreground">Log your first binary options trade</p>
-            </div>
-          ) : (
-            <table className="bloomberg-table">
-              <thead>
-                <tr>
-                  <th>Asset</th>
-                  <th>Dir</th>
-                  <th>Expiry</th>
-                  <th>Result</th>
-                  <th>Notes</th>
-                  <th>Time</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trades.map((t) => (
-                  <tr key={t.id}>
-                    <td className="font-semibold">{t.asset}</td>
-                    <td>
-                      <Badge className={`text-[10px] ${t.direction === 'CALL' ? 'badge-buy' : 'badge-sell'}`}>
-                        {t.direction === 'CALL' ? <><ArrowUpRight className="w-3 h-3 mr-0.5" />CALL</> : <><ArrowDownRight className="w-3 h-3 mr-0.5" />PUT</>}
-                      </Badge>
-                    </td>
-                    <td className="font-mono-data">{t.expiry_seconds}s</td>
-                    <td>
-                      <Badge className={`text-[10px] ${t.result === 'WIN' ? 'badge-win' : t.result === 'LOSS' ? 'badge-loss' : 'badge-pending'}`}>
-                        {t.result}
-                      </Badge>
-                    </td>
-                    <td className="text-muted-foreground text-[11px] max-w-[150px] truncate">{t.notes || '—'}</td>
-                    <td className="font-mono-data text-[10px] text-muted-foreground">{t.created_at?.slice(0, 19)}</td>
-                    <td>
-                      {t.result === 'PENDING' && (
-                        <div className="flex gap-1">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-2 text-[10px] text-green-400 hover:bg-green-500/10"
-                            onClick={() => handleUpdateResult(t.id, 'WIN')}
-                          >
-                            Win
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-2 text-[10px] text-red-400 hover:bg-red-500/10"
-                            onClick={() => handleUpdateResult(t.id, 'LOSS')}
-                          >
-                            Loss
-                          </Button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col">
+        <div className="px-3 pt-1 border-b border-border">
+          <TabsList className="bg-transparent h-8 p-0 gap-4">
+            <TabsTrigger value="journal" className="text-xs data-[state=active]:text-cyan-400 data-[state=active]:border-b-2 data-[state=active]:border-cyan-400 rounded-none bg-transparent h-8 px-0">
+              Trade Journal
+            </TabsTrigger>
+            <TabsTrigger value="analytics" className="text-xs data-[state=active]:text-cyan-400 data-[state=active]:border-b-2 data-[state=active]:border-cyan-400 rounded-none bg-transparent h-8 px-0">
+              Analytics
+            </TabsTrigger>
+          </TabsList>
         </div>
-      </ScrollArea>
+
+        <TabsContent value="journal" className="flex-1 m-0">
+          <ScrollArea className="flex-1">
+            <div className="panel-body">
+              {loading ? (
+                <div className="flex items-center justify-center py-12"><div className="spinner" /></div>
+              ) : trades.length === 0 ? (
+                <div className="empty-state">
+                  <NotebookPen className="w-10 h-10 opacity-30" />
+                  <p className="text-sm">No trades logged</p>
+                  <p className="text-xs text-muted-foreground">Log your first binary options trade</p>
+                </div>
+              ) : (
+                <table className="bloomberg-table">
+                  <thead>
+                    <tr>
+                      <th>Asset</th>
+                      <th>Dir</th>
+                      <th>Expiry</th>
+                      <th>Result</th>
+                      <th>Notes</th>
+                      <th>Time</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trades.map((t) => (
+                      <tr key={t.id}>
+                        <td className="font-semibold">{t.asset}</td>
+                        <td>
+                          <Badge className={`text-[10px] ${t.direction === 'CALL' ? 'badge-buy' : 'badge-sell'}`}>
+                            {t.direction === 'CALL' ? <><ArrowUpRight className="w-3 h-3 mr-0.5" />CALL</> : <><ArrowDownRight className="w-3 h-3 mr-0.5" />PUT</>}
+                          </Badge>
+                        </td>
+                        <td className="font-mono-data">{t.expiry_seconds}s</td>
+                        <td>
+                          <Badge className={`text-[10px] ${t.result === 'WIN' ? 'badge-win' : t.result === 'LOSS' ? 'badge-loss' : 'badge-pending'}`}>
+                            {t.result}
+                          </Badge>
+                        </td>
+                        <td className="text-muted-foreground text-[11px] max-w-[150px] truncate">{t.notes || '—'}</td>
+                        <td className="font-mono-data text-[10px] text-muted-foreground">{t.created_at?.slice(0, 19)}</td>
+                        <td>
+                          {t.result === 'PENDING' && (
+                            <div className="flex gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-2 text-[10px] text-green-400 hover:bg-green-500/10"
+                                onClick={() => handleUpdateResult(t.id, 'WIN')}
+                              >
+                                Win
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-2 text-[10px] text-red-400 hover:bg-red-500/10"
+                                onClick={() => handleUpdateResult(t.id, 'LOSS')}
+                              >
+                                Loss
+                              </Button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </ScrollArea>
+        </TabsContent>
+
+        <TabsContent value="analytics" className="flex-1 m-0">
+          <ScrollArea className="flex-1">
+            <div className="p-3 space-y-4">
+              {/* Win/Loss by Asset */}
+              <div className="terminal-panel">
+                <div className="panel-header">
+                  <div className="panel-header-title">
+                    <BarChart3 className="w-4 h-4 text-cyan-400" />
+                    <span>Win/Loss by Asset</span>
+                  </div>
+                </div>
+                <div className="panel-body">
+                  {assetChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={assetChartData} barGap={2}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} />
+                        <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_THEME.axis }} />
+                        <YAxis tick={{ fontSize: 10, fill: CHART_THEME.axis }} />
+                        <RTooltip contentStyle={CustomTooltipStyle} />
+                        <Bar dataKey="wins" name="Wins" fill="#22C55E" radius={[3, 3, 0, 0]} />
+                        <Bar dataKey="losses" name="Losses" fill="#EF4444" radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="empty-state py-6"><p className="text-xs text-muted-foreground">No completed trades yet</p></div>
+                  )}
+                </div>
+              </div>
+
+              {/* Win/Loss by Expiry */}
+              <div className="terminal-panel">
+                <div className="panel-header">
+                  <div className="panel-header-title">
+                    <Clock className="w-4 h-4 text-cyan-400" />
+                    <span>Win/Loss by Expiry</span>
+                  </div>
+                </div>
+                <div className="panel-body">
+                  {expiryChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={expiryChartData} barGap={2}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} />
+                        <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_THEME.axis }} />
+                        <YAxis tick={{ fontSize: 10, fill: CHART_THEME.axis }} />
+                        <RTooltip contentStyle={CustomTooltipStyle} />
+                        <Bar dataKey="wins" name="Wins" fill="#22C55E" radius={[3, 3, 0, 0]} />
+                        <Bar dataKey="losses" name="Losses" fill="#EF4444" radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="empty-state py-6"><p className="text-xs text-muted-foreground">No completed trades yet</p></div>
+                  )}
+                </div>
+              </div>
+
+              {/* Asset Win Rate Table */}
+              {assetChartData.length > 0 && (
+                <div className="terminal-panel">
+                  <div className="panel-header">
+                    <div className="panel-header-title">
+                      <Target className="w-4 h-4 text-cyan-400" />
+                      <span>Asset Performance</span>
+                    </div>
+                  </div>
+                  <div className="panel-body">
+                    <table className="bloomberg-table">
+                      <thead>
+                        <tr>
+                          <th>Asset</th>
+                          <th className="text-right">Wins</th>
+                          <th className="text-right">Losses</th>
+                          <th className="text-right">Win Rate</th>
+                          <th>Progress</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {assetChartData.map(a => (
+                          <tr key={a.name}>
+                            <td className="font-semibold">{a.name}</td>
+                            <td className="text-right text-green-400">{a.wins}</td>
+                            <td className="text-right text-red-400">{a.losses}</td>
+                            <td className="text-right">{a.winRate}%</td>
+                            <td>
+                              <div className="w-20 h-1.5 rounded-full bg-secondary overflow-hidden">
+                                <div className="h-full rounded-full" style={{ width: `${a.winRate}%`, background: a.winRate >= 50 ? '#22C55E' : '#EF4444' }} />
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

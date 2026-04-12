@@ -274,7 +274,9 @@ async def refresh_news(request: Request):
         for art in articles:
             db.news_cache.insert_one(art)
     
-    return {"status": "refreshed", "count": len(articles), "articles": articles}
+    # Re-read from DB to get proper serialization
+    cached = list(db.news_cache.find().sort("fetched_at", -1))
+    return {"status": "refreshed", "count": len(cached), "articles": serialize_doc(cached)}
 
 
 @app.get("/api/news")
@@ -486,7 +488,7 @@ async def update_trade(trade_id: str, request: Request, data: TradeUpdate):
 
 @app.get("/api/trades/stats")
 async def get_trade_stats(request: Request):
-    """Get trading statistics"""
+    """Get trading statistics with detailed analytics"""
     total = db.trades.count_documents({})
     wins = db.trades.count_documents({"result": "WIN"})
     losses = db.trades.count_documents({"result": "LOSS"})
@@ -496,7 +498,7 @@ async def get_trade_stats(request: Request):
     win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
     
     # Asset breakdown
-    pipeline = [
+    asset_pipeline = [
         {"$match": {"result": {"$in": ["WIN", "LOSS"]}}},
         {"$group": {
             "_id": "$asset",
@@ -505,7 +507,47 @@ async def get_trade_stats(request: Request):
             "total": {"$sum": 1}
         }}
     ]
-    asset_stats = list(db.trades.aggregate(pipeline))
+    asset_stats = list(db.trades.aggregate(asset_pipeline))
+    
+    # Direction breakdown
+    direction_pipeline = [
+        {"$match": {"result": {"$in": ["WIN", "LOSS"]}}},
+        {"$group": {
+            "_id": "$direction",
+            "wins": {"$sum": {"$cond": [{"$eq": ["$result", "WIN"]}, 1, 0]}},
+            "losses": {"$sum": {"$cond": [{"$eq": ["$result", "LOSS"]}, 1, 0]}},
+            "total": {"$sum": 1}
+        }}
+    ]
+    direction_stats = list(db.trades.aggregate(direction_pipeline))
+    
+    # Expiry breakdown
+    expiry_pipeline = [
+        {"$match": {"result": {"$in": ["WIN", "LOSS"]}}},
+        {"$group": {
+            "_id": "$expiry_seconds",
+            "wins": {"$sum": {"$cond": [{"$eq": ["$result", "WIN"]}, 1, 0]}},
+            "losses": {"$sum": {"$cond": [{"$eq": ["$result", "LOSS"]}, 1, 0]}},
+            "total": {"$sum": 1}
+        }}
+    ]
+    expiry_stats = list(db.trades.aggregate(expiry_pipeline))
+    
+    # Recent trade results for chart (last 20)
+    recent_trades = list(
+        db.trades.find(
+            {"result": {"$in": ["WIN", "LOSS"]}},
+            {"result": 1, "asset": 1, "created_at": 1, "direction": 1}
+        ).sort("created_at", DESCENDING).limit(20)
+    )
+    recent_chart = []
+    for i, t in enumerate(reversed(recent_trades)):
+        recent_chart.append({
+            "index": i + 1,
+            "result": 1 if t["result"] == "WIN" else 0,
+            "asset": t.get("asset", ""),
+            "direction": t.get("direction", "")
+        })
     
     return {
         "total": total,
@@ -514,8 +556,26 @@ async def get_trade_stats(request: Request):
         "draws": draws,
         "pending": pending,
         "win_rate": round(win_rate, 1),
-        "asset_breakdown": asset_stats
+        "asset_breakdown": asset_stats,
+        "direction_breakdown": direction_stats,
+        "expiry_breakdown": expiry_stats,
+        "recent_chart": recent_chart
     }
+
+
+@app.get("/api/portfolio/allocation")
+async def get_portfolio_allocation(request: Request):
+    """Get portfolio allocation breakdown by asset class"""
+    pipeline = [
+        {"$group": {
+            "_id": "$asset_class",
+            "count": {"$sum": 1},
+            "total_quantity": {"$sum": "$quantity"},
+            "assets": {"$push": {"name": "$shortname", "qty": "$quantity", "secid": "$secid"}}
+        }}
+    ]
+    allocation = list(db.holdings.aggregate(pipeline))
+    return allocation
 
 
 # ============================================

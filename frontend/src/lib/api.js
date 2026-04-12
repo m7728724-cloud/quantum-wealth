@@ -46,6 +46,7 @@ export const portfolioAPI = {
   addHolding: (data) => api.post('/api/portfolio/holdings', data),
   deleteHolding: (id) => api.delete(`/api/portfolio/holdings/${id}`),
   resolveISIN: (isin) => api.post('/api/portfolio/resolve-isin', { isin }),
+  getAllocation: () => api.get('/api/portfolio/allocation'),
 };
 
 // News
