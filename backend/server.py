@@ -4,6 +4,8 @@ Military-grade secure, self-learning trading terminal
 """
 import os
 import logging
+import asyncio
+import threading
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Optional, List
@@ -27,12 +29,15 @@ from models import (
     UserLogin, TokenResponse
 )
 from services.moex_service import resolve_isin, get_security_market_data
-from services.ai_service import analyze_portfolio, generate_safeguard_rules
+from services.ai_service import analyze_portfolio, generate_safeguard_rules, ai_filter_signal
 from services.news_service import fetch_all_feeds
 from services.memory_service import (
     retrieve_relevant_memories, retrieve_safeguard_rules,
     log_memory, save_safeguard_rules
 )
+from services.signal_brain import scan_all_pairs, analyze_pair, calculate_indicator_performance
+from services.price_data import fetch_candles, fetch_multi, get_supported_symbols, get_current_price
+from services.tinkoff_service import sync_portfolio, get_tinkoff_status
 from utils.auth import (
     hash_password, verify_password, create_token,
     get_current_user, require_auth
@@ -747,6 +752,155 @@ async def get_dashboard_stats(request: Request):
         "losses": losses,
         "timestamp": datetime.now().isoformat()
     }
+
+
+# ============================================
+# Quantum Signal Brain — BO Signal Scanner
+# ============================================
+_auto_scan_task = None
+_auto_scan_running = False
+DEFAULT_PAIRS = ["EURUSD", "USDJPY", "AUDUSD", "AUDJPY", "EURJPY", "USDCAD"]
+DEFAULT_EXPIRIES = [300, 600, 900]  # 5min, 10min, 15min in seconds
+
+
+@app.get("/api/signals/scan")
+async def scan_signals(request: Request):
+    """Manually trigger a scan of all configured pairs"""
+    require_auth(request)
+    try:
+        # Fetch price data for all pairs
+        price_data = fetch_multi(DEFAULT_PAIRS, interval="1m")
+        if not price_data:
+            return {"signals": [], "message": "Could not fetch price data. Market may be closed."}
+
+        # Run confluence analysis
+        raw_signals = scan_all_pairs(price_data)
+
+        # Get context for AI filter
+        news_items = list(db.news_cache.find().sort("fetched_at", DESCENDING).limit(10))
+        safeguard_rules_list = list(db.safeguard_rules.find({"active": True}))
+
+        approved_signals = []
+        for sig in raw_signals:
+            symbol = sig["symbol"]
+
+            # Get recent trades for this asset
+            recent_trades = list(
+                db.trades.find({"asset": symbol}).sort("created_at", DESCENDING).limit(10)
+            )
+
+            # AI filter
+            ai_verdict = await ai_filter_signal(
+                sig,
+                news_items=[serialize_doc(n) for n in news_items],
+                safeguard_rules=[serialize_doc(s) for s in safeguard_rules_list],
+                recent_trades=[serialize_doc(t) for t in recent_trades]
+            )
+
+            sig["ai_filter"] = ai_verdict
+            sig["approved"] = ai_verdict.get("approved", True)
+            sig["expiry_options"] = DEFAULT_EXPIRIES
+
+            # Save to signals collection
+            signal_doc = {
+                **sig,
+                "source": "quantum_brain",
+                "received_at": datetime.now().isoformat(),
+                "logged_as_trade": False
+            }
+            result = db.signals.insert_one(signal_doc)
+            sig["id"] = str(result.inserted_id)
+
+            approved_signals.append(sig)
+
+            # Log in memory
+            log_memory(
+                db,
+                interaction_type="signal_generated",
+                content=f"{sig['direction']} {symbol} | Confluence: {sig['confluence_score']}/6 | Confidence: {sig['confidence']}% | AI: {'OK' if sig['approved'] else 'BLOCKED'}",
+                tags=["signal", symbol, sig["direction"]]
+            )
+
+        return {
+            "signals": approved_signals,
+            "total_scanned": len(price_data),
+            "total_generated": len(raw_signals),
+            "total_approved": len([s for s in approved_signals if s["approved"]]),
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Signal scan error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/signals/performance")
+async def get_signal_performance(request: Request):
+    """Get signal accuracy stats by indicator and pair"""
+    require_auth(request)
+    trades = list(db.trades.find({"result": {"$in": ["WIN", "LOSS"]}}).limit(500))
+    perf = calculate_indicator_performance(trades)
+
+    # Per-pair stats
+    pair_stats = {}
+    for trade in trades:
+        asset = trade.get("asset", "UNKNOWN")
+        if asset not in pair_stats:
+            pair_stats[asset] = {"wins": 0, "losses": 0, "total": 0}
+        pair_stats[asset]["total"] += 1
+        if trade.get("result") == "WIN":
+            pair_stats[asset]["wins"] += 1
+        else:
+            pair_stats[asset]["losses"] += 1
+
+    for asset, data in pair_stats.items():
+        data["win_rate"] = round(data["wins"] / data["total"] * 100, 1) if data["total"] > 0 else 0
+
+    return {
+        "indicator_performance": perf,
+        "pair_performance": pair_stats,
+        "total_trades_analyzed": len(trades)
+    }
+
+
+@app.get("/api/signals/supported-pairs")
+async def get_supported_pairs(request: Request):
+    """Get list of supported forex pairs"""
+    require_auth(request)
+    return {
+        "pairs": DEFAULT_PAIRS,
+        "all_available": get_supported_symbols(),
+        "expiry_options": DEFAULT_EXPIRIES
+    }
+
+
+# ============================================
+# Tinkoff Portfolio Sync
+# ============================================
+@app.post("/api/tinkoff/sync")
+async def tinkoff_sync(request: Request):
+    """Sync portfolio from Tinkoff Investments"""
+    require_auth(request)
+    try:
+        result = sync_portfolio(db)
+        if "error" not in result:
+            log_memory(
+                db,
+                interaction_type="tinkoff_sync",
+                content=f"Synced {result.get('holdings_synced', 0)} positions from Tinkoff. Total value: {result.get('total_portfolio_value', 0)} RUB",
+                tags=["tinkoff", "portfolio_sync"]
+            )
+        return result
+    except Exception as e:
+        logger.error(f"Tinkoff sync error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/tinkoff/status")
+async def tinkoff_connection_status(request: Request):
+    """Check Tinkoff connection status"""
+    require_auth(request)
+    return get_tinkoff_status()
 
 
 if __name__ == "__main__":
