@@ -49,7 +49,8 @@ limiter = Limiter(key_func=get_remote_address)
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "quantum_wealth")
 
-client = MongoClient(MONGO_URL)
+import certifi
+client = MongoClient(MONGO_URL, tlsCAFile=certifi.where())
 db = client[DB_NAME]
 
 

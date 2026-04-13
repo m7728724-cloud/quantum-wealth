@@ -4,7 +4,19 @@ import json
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+class UserMessage:
+    def __init__(self, text):
+        self.text = text
+
+class LlmChat:
+    def __init__(self, api_key, session_id, system_message):
+        self.api_key = api_key
+    def with_model(self, provider, model):
+        pass
+    async def send_message(self, msg):
+        if 'LOSS TRADE ANALYSIS' in msg.text:
+             return '[{"rule_text": "Mock rule: Avoid trading during API downtime", "severity": "medium", "confidence": 0.9, "pattern_found": "system offline", "related_assets": ["All"]}]'
+        return '{"portfolio_summary": "Mock analysis. Configure real API provider in ai_service.py", "risk_assessment": "low", "macro_view": "Neutral", "insights": ["AI offline"], "action_items": [], "confidence": 0.5}'
 
 logger = logging.getLogger(__name__)
 
