@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "anthropic/claude-sonnet-4-20250514"
+MODEL = "anthropic/claude-sonnet-4"
 
 
 def _get_api_key():
