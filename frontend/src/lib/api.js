@@ -43,6 +43,7 @@ export const authAPI = {
 // Portfolio
 export const portfolioAPI = {
   getHoldings: () => api.get('/api/portfolio/holdings'),
+  getHoldingsEnriched: () => api.get('/api/portfolio/holdings-enriched'),
   addHolding: (data) => api.post('/api/portfolio/holdings', data),
   deleteHolding: (id) => api.delete(`/api/portfolio/holdings/${id}`),
   resolveISIN: (isin) => api.post('/api/portfolio/resolve-isin', { isin }),

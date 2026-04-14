@@ -120,13 +120,13 @@ function LoginPage({ onLogin }) {
 // Sidebar Navigation
 // ============================================
 const NAV_ITEMS = [
-  { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', path: '/' },
-  { id: 'portfolio', icon: Briefcase, label: 'Portfolio', path: '/portfolio' },
-  { id: 'news', icon: Newspaper, label: 'News Feed', path: '/news' },
-  { id: 'ai', icon: BrainCircuit, label: 'AI Insights', path: '/ai' },
-  { id: 'signals', icon: Radar, label: 'TV Signals', path: '/signals' },
-  { id: 'trades', icon: NotebookPen, label: 'BO Journal', path: '/trades' },
-  { id: 'memory', icon: ShieldAlert, label: 'Memory & Rules', path: '/memory' },
+  { id: 'dashboard', icon: LayoutDashboard, label: 'Главная', path: '/' },
+  { id: 'portfolio', icon: Briefcase, label: 'Портфель', path: '/portfolio' },
+  { id: 'news', icon: Newspaper, label: 'Новости', path: '/news' },
+  { id: 'ai', icon: BrainCircuit, label: 'AI Аналитика', path: '/ai' },
+  { id: 'signals', icon: Radar, label: 'Сигналы', path: '/signals' },
+  { id: 'trades', icon: NotebookPen, label: 'Журнал сделок', path: '/trades' },
+  { id: 'memory', icon: ShieldAlert, label: 'Правила', path: '/memory' },
 ];
 
 function Sidebar({ onLogout }) {
@@ -256,6 +256,8 @@ function DashboardPage() {
   const [stats, setStats] = useState(null);
   const [tradeStats, setTradeStats] = useState(null);
   const [allocation, setAllocation] = useState([]);
+  const [enriched, setEnriched] = useState(null);
+  const [aiTip, setAiTip] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -264,14 +266,16 @@ function DashboardPage() {
 
   const loadAll = async () => {
     try {
-      const [statsRes, tradeRes, allocRes] = await Promise.all([
+      const [statsRes, tradeRes, allocRes, enrichRes] = await Promise.all([
         dashboardAPI.getStats(),
         tradesAPI.getStats(),
-        portfolioAPI.getAllocation().catch(() => ({ data: [] }))
+        portfolioAPI.getAllocation().catch(() => ({ data: [] })),
+        portfolioAPI.getHoldingsEnriched().catch(() => ({ data: null }))
       ]);
       setStats(statsRes.data);
       setTradeStats(tradeRes.data);
       setAllocation(allocRes.data);
+      setEnriched(enrichRes.data);
     } catch (err) {
       console.error('Dashboard load error:', err);
     } finally {
@@ -279,101 +283,118 @@ function DashboardPage() {
     }
   };
 
+  const handleQuickAI = async () => {
+    try {
+      setAiTip({ loading: true });
+      const res = await aiAPI.getInsight({});
+      setAiTip(res.data);
+    } catch (err) {
+      setAiTip({ error: 'Ошибка AI анализа' });
+    }
+  };
+
   if (loading) return <div className="flex items-center justify-center h-full"><div className="spinner" /></div>;
+
+  const summary = enriched?.summary || {};
+  const holdings = enriched?.holdings || [];
+  const plColor = summary.total_pl >= 0 ? 'text-green-400' : 'text-red-400';
+  const plSign = summary.total_pl >= 0 ? '+' : '';
+
+  // Sort holdings by P&L for display
+  const sortedByPL = [...holdings].sort((a, b) => (a.pl_absolute || 0) - (b.pl_absolute || 0));
+  const losers = sortedByPL.filter(h => h.pl_absolute < 0);
+  const winners = sortedByPL.filter(h => h.pl_absolute > 0).reverse();
 
   // Prepare allocation chart data
   const allocationData = allocation.map((a, i) => ({
-    name: a._id || 'Other',
+    name: a._id === 'stock' ? 'Акции' : a._id === 'bond' ? 'Облигации' : a._id === 'etf' ? 'Фонды' : a._id === 'liquidity_fund' ? 'Ликвидность' : a._id || 'Другое',
     value: a.count,
     fill: CHART_COLORS[i % CHART_COLORS.length]
   }));
 
-  // Prepare asset win/loss chart data
-  const assetChartData = (tradeStats?.asset_breakdown || []).map(a => ({
-    name: a._id,
-    wins: a.wins,
-    losses: a.losses,
-    winRate: a.total > 0 ? Math.round((a.wins / a.total) * 100) : 0
-  }));
-
-  // Prepare direction chart data
-  const directionData = (tradeStats?.direction_breakdown || []).map(d => ({
-    name: d._id,
-    wins: d.wins,
-    losses: d.losses,
-    total: d.total
-  }));
-
-  // Recent results for area chart
-  const recentChart = tradeStats?.recent_chart || [];
-
   return (
     <div className="space-y-4">
-      {/* Stat Cards Row */}
+      {/* Top Row: Portfolio Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Portfolio Holdings" value={stats?.holdings || 0} icon={Briefcase} color="cyan" />
-        <StatCard label="Total Trades" value={stats?.trades || 0} icon={NotebookPen} color="blue" />
-        <StatCard label="Win Rate" value={`${stats?.win_rate || 0}%`} icon={TrendingUp} color={stats?.win_rate >= 50 ? 'green' : 'red'} />
-        <StatCard label="Active Safeguards" value={stats?.active_rules || 0} icon={ShieldAlert} color="amber" />
+        <StatCard label="Стоимость портфеля" value={`${(summary.total_current || 0).toLocaleString('ru-RU')} ₽`} icon={Briefcase} color="cyan" />
+        <StatCard label="Прибыль / Убыток" value={`${plSign}${(summary.total_pl || 0).toLocaleString('ru-RU')} ₽`} icon={TrendingUp} color={summary.total_pl >= 0 ? 'green' : 'red'} subtitle={`${plSign}${(summary.total_pl_pct || 0).toFixed(1)}%`} />
+        <StatCard label="Позиций в портфеле" value={summary.positions_count || 0} icon={Briefcase} color="blue" subtitle={`✅ ${summary.profitable || 0} в плюсе · ❌ ${summary.losing || 0} в минусе`} />
+        <StatCard label="Сигналов / Сделок" value={`${stats?.signals || 0} / ${stats?.trades || 0}`} icon={Radar} color="amber" subtitle={stats?.win_rate > 0 ? `Win Rate: ${stats.win_rate}%` : 'Начните торговать'} />
       </div>
 
-      {/* Charts Row */}
+      {/* Middle Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        {/* Performance Summary */}
-        <div className="terminal-panel">
+        {/* Holdings Mini-Table */}
+        <div className="terminal-panel lg:col-span-2">
           <div className="panel-header">
             <div className="panel-header-title">
               <BarChart3 className="w-4 h-4 text-cyan-400" />
-              <span>Performance</span>
+              <span>Мои акции — Прибыль и Убытки</span>
             </div>
           </div>
           <div className="panel-body">
-            <div className="grid grid-cols-3 gap-4 mb-4">
-              <div className="text-center">
-                <div className="text-2xl font-mono-data text-green-400 tabular-nums">{stats?.wins || 0}</div>
-                <div className="text-xs text-muted-foreground mt-1">WINS</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-mono-data text-red-400 tabular-nums">{stats?.losses || 0}</div>
-                <div className="text-xs text-muted-foreground mt-1">LOSSES</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-mono-data text-cyan-400 tabular-nums">{stats?.signals || 0}</div>
-                <div className="text-xs text-muted-foreground mt-1">SIGNALS</div>
-              </div>
-            </div>
-            {(stats?.wins > 0 || stats?.losses > 0) && (
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs text-muted-foreground">Win Rate</span>
-                  <span className="text-xs font-mono-data">{stats?.win_rate}%</span>
-                </div>
-                <div className="w-full h-2 rounded-full bg-secondary overflow-hidden">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: `${stats?.win_rate || 0}%`,
-                      background: stats?.win_rate >= 50 ? '#22C55E' : '#EF4444'
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-            {/* Recent results mini chart */}
-            {recentChart.length > 0 && (
-              <div className="mt-4">
-                <div className="text-xs text-muted-foreground mb-2">Recent Results</div>
-                <ResponsiveContainer width="100%" height={80}>
-                  <AreaChart data={recentChart}>
-                    <defs>
-                      <linearGradient id="resultGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#22D3EE" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#22D3EE" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <Area type="stepAfter" dataKey="result" stroke="#22D3EE" fill="url(#resultGrad)" strokeWidth={2} />
-                  </AreaChart>
-                </ResponsiveContainer>
+            {holdings.length > 0 ? (
+              <table className="bloomberg-table">
+                <thead>
+                  <tr>
+                    <th>Актив</th>
+                    <th className="text-right">Кол-во</th>
+                    <th className="text-right">Покупка</th>
+                    <th className="text-right">Сейчас</th>
+                    <th className="text-right">P&L</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {holdings.filter(h => !h.is_liquidity_fund).map((h) => {
+                    const plClass = h.pl_absolute > 0 ? 'text-green-400' : h.pl_absolute < 0 ? 'text-red-400' : 'text-muted-foreground';
+                    const plSignH = h.pl_absolute > 0 ? '+' : '';
+                    return (
+                      <tr key={h.id}>
+                        <td>
+                          <span className="font-medium">{h.shortname}</span>
+                          <span className="text-cyan-400 ml-2 text-xs font-mono-data">{h.secid}</span>
+                        </td>
+                        <td className="text-right font-mono-data tabular-nums">{h.quantity}</td>
+                        <td className="text-right font-mono-data tabular-nums">{(h.buy_price || 0).toLocaleString('ru-RU')} ₽</td>
+                        <td className="text-right font-mono-data tabular-nums">{(h.current_price || 0).toLocaleString('ru-RU')} ₽</td>
+                        <td className={`text-right font-mono-data tabular-nums ${plClass}`}>
+                          {plSignH}{(h.pl_absolute || 0).toLocaleString('ru-RU')} ₽
+                          <div className="text-[10px]">{plSignH}{(h.pl_percent || 0).toFixed(1)}%</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {/* Liquidity funds at bottom */}
+                  {holdings.filter(h => h.is_liquidity_fund).map((h) => (
+                    <tr key={h.id} className="opacity-60">
+                      <td>
+                        <span className="font-medium">{h.shortname}</span>
+                        <Badge className="badge-pending text-[10px] ml-2">Ликвидность</Badge>
+                      </td>
+                      <td className="text-right font-mono-data tabular-nums">{h.quantity}</td>
+                      <td className="text-right font-mono-data tabular-nums">{(h.buy_price || 0).toFixed(2)} ₽</td>
+                      <td className="text-right font-mono-data tabular-nums">—</td>
+                      <td className="text-right text-muted-foreground text-xs">Фонд денежного рынка</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-border">
+                    <td className="font-semibold">Итого</td>
+                    <td></td>
+                    <td className="text-right font-mono-data tabular-nums font-semibold">{(summary.total_invested || 0).toLocaleString('ru-RU')} ₽</td>
+                    <td className="text-right font-mono-data tabular-nums font-semibold">{(summary.total_current || 0).toLocaleString('ru-RU')} ₽</td>
+                    <td className={`text-right font-mono-data tabular-nums font-semibold ${plColor}`}>
+                      {plSign}{(summary.total_pl || 0).toLocaleString('ru-RU')} ₽
+                      <div className="text-[10px]">{plSign}{(summary.total_pl_pct || 0).toFixed(1)}%</div>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            ) : (
+              <div className="empty-state py-6">
+                <Briefcase className="w-8 h-8 opacity-30" />
+                <p className="text-xs text-muted-foreground">Портфель пуст. Синхронизируйте Тинькофф или добавьте бумаги вручную.</p>
               </div>
             )}
           </div>
@@ -384,7 +405,7 @@ function DashboardPage() {
           <div className="panel-header">
             <div className="panel-header-title">
               <PieChartIcon className="w-4 h-4 text-cyan-400" />
-              <span>Portfolio Allocation</span>
+              <span>Структура портфеля</span>
             </div>
           </div>
           <div className="panel-body flex items-center justify-center">
@@ -413,79 +434,64 @@ function DashboardPage() {
             ) : (
               <div className="empty-state py-8">
                 <PieChartIcon className="w-8 h-8 opacity-30" />
-                <p className="text-xs text-muted-foreground">Add holdings to see allocation</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Asset Win/Loss Chart */}
-        <div className="terminal-panel">
-          <div className="panel-header">
-            <div className="panel-header-title">
-              <Target className="w-4 h-4 text-cyan-400" />
-              <span>Win/Loss by Asset</span>
-            </div>
-          </div>
-          <div className="panel-body flex items-center justify-center">
-            {assetChartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={assetChartData} barGap={2}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_THEME.grid} />
-                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: CHART_THEME.axis }} />
-                  <YAxis tick={{ fontSize: 10, fill: CHART_THEME.axis }} />
-                  <RTooltip contentStyle={CustomTooltipStyle} />
-                  <Bar dataKey="wins" fill="#22C55E" radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="losses" fill="#EF4444" radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="empty-state py-8">
-                <BarChart3 className="w-8 h-8 opacity-30" />
-                <p className="text-xs text-muted-foreground">Log trades to see analytics</p>
+                <p className="text-xs text-muted-foreground">Добавьте бумаги для диаграммы</p>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Bottom Row */}
+      {/* Bottom Row: AI Tips + System Status */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {/* Direction Stats */}
+        {/* AI Quick Analysis */}
         <div className="terminal-panel">
           <div className="panel-header">
             <div className="panel-header-title">
-              <Activity className="w-4 h-4 text-blue-400" />
-              <span>Direction Analysis</span>
+              <BrainCircuit className="w-4 h-4 text-cyan-400" />
+              <span>AI Рекомендации</span>
             </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs border-cyan-500/30 text-cyan-400"
+              onClick={handleQuickAI}
+              disabled={aiTip?.loading}
+            >
+              {aiTip?.loading ? <span className="spinner w-3 h-3 mr-1" /> : <BrainCircuit className="w-3 h-3 mr-1" />}
+              {aiTip?.loading ? 'Анализирую...' : 'Получить совет'}
+            </Button>
           </div>
           <div className="panel-body">
-            {directionData.length > 0 ? (
+            {aiTip && !aiTip.loading && !aiTip.error ? (
               <div className="space-y-3">
-                {directionData.map((d) => {
-                  const wr = d.total > 0 ? Math.round((d.wins / d.total) * 100) : 0;
-                  return (
-                    <div key={d.name} className="flex items-center gap-3">
-                      <Badge className={`text-xs w-14 justify-center ${d.name === 'CALL' ? 'badge-buy' : 'badge-sell'}`}>
-                        {d.name}
-                      </Badge>
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-mono-data">{d.wins}W / {d.losses}L</span>
-                          <span className="text-xs font-mono-data">{wr}%</span>
-                        </div>
-                        <div className="w-full h-1.5 rounded-full bg-secondary overflow-hidden">
-                          <div className="h-full rounded-full" style={{ width: `${wr}%`, background: wr >= 50 ? '#22C55E' : '#EF4444' }} />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                {aiTip.portfolio_summary && (
+                  <p className="text-sm">{aiTip.portfolio_summary}</p>
+                )}
+                {aiTip.action_items?.length > 0 && (
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Что делать:</p>
+                    <ul className="space-y-1.5">
+                      {aiTip.action_items.slice(0, 4).map((act, i) => (
+                        <li key={i} className="text-sm flex items-start gap-2">
+                          <CheckCircle className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+                          {act}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {aiTip.risk_assessment && (
+                  <Badge className={`text-xs ${aiTip.risk_assessment === 'low' ? 'bg-green-500/10 text-green-400' : aiTip.risk_assessment === 'medium' ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/10 text-red-400'}`}>
+                    Риск: {aiTip.risk_assessment === 'low' ? 'Низкий' : aiTip.risk_assessment === 'medium' ? 'Средний' : 'Высокий'}
+                  </Badge>
+                )}
               </div>
+            ) : aiTip?.error ? (
+              <p className="text-sm text-red-400">{aiTip.error}</p>
             ) : (
               <div className="empty-state py-6">
-                <Activity className="w-8 h-8 opacity-30" />
-                <p className="text-xs text-muted-foreground">Trade data required</p>
+                <BrainCircuit className="w-8 h-8 opacity-30" />
+                <p className="text-xs text-muted-foreground">Нажмите «Получить совет» для AI анализа вашего портфеля</p>
               </div>
             )}
           </div>
@@ -496,16 +502,16 @@ function DashboardPage() {
           <div className="panel-header">
             <div className="panel-header-title">
               <Newspaper className="w-4 h-4 text-blue-400" />
-              <span>System Status</span>
+              <span>Статус системы</span>
             </div>
           </div>
           <div className="panel-body space-y-3">
             <StatusRow label="MOEX ISS API" status="online" />
-            <StatusRow label="Claude AI Engine" status="online" />
-            <StatusRow label="RSS Feeds" status="online" />
-            <StatusRow label="Webhook Listener" status="online" />
-            <StatusRow label="Adaptive Memory" status="online" />
-            <StatusRow label="News Articles Cached" value={stats?.news_articles || 0} />
+            <StatusRow label="Claude AI" status="online" />
+            <StatusRow label="RSS Ленты" status="online" />
+            <StatusRow label="Тинькофф Sync" status="online" />
+            <StatusRow label="Quantum Brain" status="online" />
+            <StatusRow label="Новостей в базе" value={stats?.news_articles || 0} />
           </div>
         </div>
       </div>
@@ -513,7 +519,7 @@ function DashboardPage() {
   );
 }
 
-function StatCard({ label, value, icon: Icon, color }) {
+function StatCard({ label, value, icon: Icon, color, subtitle }) {
   const colorMap = {
     cyan: 'text-cyan-400',
     green: 'text-green-400',
@@ -529,6 +535,7 @@ function StatCard({ label, value, icon: Icon, color }) {
         <span className="stat-label">{label}</span>
       </div>
       <div className={`stat-value ${colorMap[color] || ''}`}>{value}</div>
+      {subtitle && <div className="text-[10px] text-muted-foreground mt-1">{subtitle}</div>}
     </div>
   );
 }
@@ -540,7 +547,7 @@ function StatusRow({ label, status, value }) {
       {status ? (
         <span className={`text-xs flex items-center gap-1 ${status === 'online' ? 'text-green-400' : 'text-red-400'}`}>
           <div className={`w-2 h-2 rounded-full ${status === 'online' ? 'bg-green-400' : 'bg-red-400'}`} />
-          {status.toUpperCase()}
+          {status === 'online' ? 'РАБОТАЕТ' : 'ОШИБКА'}
         </span>
       ) : (
         <span className="text-xs font-mono-data text-muted-foreground">{value}</span>
@@ -553,8 +560,9 @@ function StatusRow({ label, status, value }) {
 // Portfolio Page
 // ============================================
 function PortfolioPage() {
-  const [holdings, setHoldings] = useState([]);
+  const [enriched, setEnriched] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [isinInput, setIsinInput] = useState('');
   const [quantityInput, setQuantityInput] = useState('1');
@@ -570,172 +578,123 @@ function PortfolioPage() {
 
   const loadHoldings = async () => {
     try {
-      const res = await portfolioAPI.getHoldings();
-      setHoldings(res.data);
+      const res = await portfolioAPI.getHoldingsEnriched();
+      setEnriched(res.data);
     } catch (err) {
-      toast.error('Failed to load holdings');
+      toast.error('Ошибка загрузки портфеля');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleSyncTinkoff = async () => {
+    setSyncing(true);
+    try {
+      const res = await tinkoffAPI.sync();
+      if (res.data.error) {
+        toast.error('Тинькофф: ' + res.data.error);
+      } else {
+        toast.success('Синхронизировано: ' + res.data.holdings_synced + ' позиций');
+        loadHoldings();
+      }
+    } catch (err) {
+      toast.error('Ошибка синхронизации Тинькофф');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const handleResolveISIN = async () => {
     if (!isinInput.trim()) return;
-    setResolving(true);
-    setResolved(null);
-    setResolveError('');
+    setResolving(true); setResolved(null); setResolveError('');
     try {
       const res = await portfolioAPI.resolveISIN(isinInput.trim());
       setResolved(res.data);
     } catch (err) {
-      setResolveError(err.response?.data?.detail || 'Failed to resolve ISIN');
-    } finally {
-      setResolving(false);
-    }
+      setResolveError(err.response?.data?.detail || 'Не найден');
+    } finally { setResolving(false); }
   };
 
   const handleAddHolding = async () => {
     if (!isinInput.trim()) return;
     setAdding(true);
     try {
-      await portfolioAPI.addHolding({
-        isin: isinInput.trim(),
-        quantity: parseFloat(quantityInput) || 1,
-        buy_price: priceInput ? parseFloat(priceInput) : null,
-      });
-      toast.success('Holding added successfully');
-      setAddDialogOpen(false);
-      setIsinInput('');
-      setQuantityInput('1');
-      setPriceInput('');
-      setResolved(null);
+      await portfolioAPI.addHolding({ isin: isinInput.trim(), quantity: parseFloat(quantityInput) || 1, buy_price: priceInput ? parseFloat(priceInput) : null });
+      toast.success('Бумага добавлена');
+      setAddDialogOpen(false); setIsinInput(''); setQuantityInput('1'); setPriceInput(''); setResolved(null);
       loadHoldings();
-    } catch (err) {
-      toast.error(err.response?.data?.detail || 'Failed to add holding');
-    } finally {
-      setAdding(false);
-    }
+    } catch (err) { toast.error('Ошибка добавления'); }
+    finally { setAdding(false); }
   };
 
   const handleDelete = async (id) => {
-    try {
-      await portfolioAPI.deleteHolding(id);
-      toast.success('Holding removed');
-      loadHoldings();
-    } catch (err) {
-      toast.error('Failed to delete holding');
-    }
+    try { await portfolioAPI.deleteHolding(id); toast.success('Удалено'); loadHoldings(); }
+    catch (err) { toast.error('Ошибка удаления'); }
   };
+
+  const holdings = enriched?.holdings || [];
+  const summary = enriched?.summary || {};
+  const plColor = summary.total_pl >= 0 ? 'text-green-400' : 'text-red-400';
+  const plSign = summary.total_pl >= 0 ? '+' : '';
 
   return (
     <div className="terminal-panel h-full flex flex-col">
       <div className="panel-header">
         <div className="panel-header-title">
           <Briefcase className="w-4 h-4 text-cyan-400" />
-          <span>Portfolio Holdings</span>
-          <Badge variant="outline" className="text-xs font-mono-data">{holdings.length}</Badge>
+          <span>Мой портфель</span>
+          <Badge variant="outline" className="text-xs font-mono-data">{holdings.length} позиций</Badge>
+          {summary.total_current > 0 && (
+            <Badge variant="outline" className={'text-xs font-mono-data ' + plColor}>
+              {plSign}{(summary.total_pl || 0).toLocaleString('ru-RU')} руб ({plSign}{(summary.total_pl_pct || 0).toFixed(1)}%)
+            </Badge>
+          )}
         </div>
-        <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-          <DialogTrigger asChild>
-            <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="portfolio-add-holding-open-button">
-              <Plus className="w-3 h-3 mr-1" />Add Holding
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="bg-card border-border max-w-md">
-            <DialogHeader>
-              <DialogTitle>Add Portfolio Holding</DialogTitle>
-              <DialogDescription className="text-xs text-muted-foreground">
-                Enter an ISIN code to auto-resolve the asset name via MOEX
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-2">
-              <div>
-                <label className="text-xs text-muted-foreground uppercase tracking-wider mb-1 block">ISIN Code</label>
-                <div className="flex gap-2">
-                  <Input
-                    data-testid="portfolio-add-holding-isin-input"
-                    value={isinInput}
-                    onChange={(e) => { setIsinInput(e.target.value.toUpperCase()); setResolved(null); setResolveError(''); }}
-                    placeholder="RU0007661625"
-                    className="font-mono-data tracking-wider"
-                  />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleResolveISIN}
-                    disabled={resolving || !isinInput.trim()}
-                    className="text-xs whitespace-nowrap"
-                  >
-                    {resolving ? <span className="spinner w-4 h-4" /> : <><Search className="w-3 h-3 mr-1" />Resolve</>}
-                  </Button>
-                </div>
-              </div>
-
-              {/* Resolution Preview */}
-              {resolved && (
-                <div data-testid="portfolio-add-holding-resolution-preview" className="p-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="w-4 h-4 text-green-400" />
-                    <span className="text-xs text-green-400">ISIN Resolved</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div><span className="text-muted-foreground">Asset:</span> <span className="font-medium">{resolved.shortname}</span></div>
-                    <div><span className="text-muted-foreground">SECID:</span> <span className="font-mono-data">{resolved.secid}</span></div>
-                    <div className="col-span-2"><span className="text-muted-foreground">Full:</span> <span>{resolved.fullname}</span></div>
-                    <div><span className="text-muted-foreground">Type:</span> <span>{resolved.asset_class}</span></div>
-                    <div><span className="text-muted-foreground">Board:</span> <span className="font-mono-data">{resolved.primary_boardid}</span></div>
-                    {resolved.is_liquidity_fund && (
-                      <div className="col-span-2">
-                        <Badge className="badge-pending text-xs">Liquidity Fund - No TA indicators</Badge>
-                      </div>
-                    )}
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" className="h-7 text-xs border-blue-500/30 text-blue-400 hover:bg-blue-500/10" onClick={handleSyncTinkoff} disabled={syncing}>
+            {syncing ? <span className="spinner w-3 h-3 mr-1" /> : <RefreshCw className="w-3 h-3 mr-1" />}
+            {syncing ? 'Загрузка...' : 'Тинькофф'}
+          </Button>
+          <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+            <DialogTrigger asChild>
+              <Button size="sm" variant="outline" className="h-7 text-xs"><Plus className="w-3 h-3 mr-1" />Добавить</Button>
+            </DialogTrigger>
+            <DialogContent className="bg-card border-border max-w-md">
+              <DialogHeader>
+                <DialogTitle>Добавить бумагу</DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">Введите ISIN для поиска через MOEX</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-2">
+                <div>
+                  <label className="text-xs text-muted-foreground uppercase tracking-wider mb-1 block">ISIN</label>
+                  <div className="flex gap-2">
+                    <Input value={isinInput} onChange={(e) => { setIsinInput(e.target.value.toUpperCase()); setResolved(null); setResolveError(''); }} placeholder="RU0007661625" className="font-mono-data tracking-wider" />
+                    <Button size="sm" variant="outline" onClick={handleResolveISIN} disabled={resolving || !isinInput.trim()} className="text-xs whitespace-nowrap">
+                      {resolving ? <span className="spinner w-4 h-4" /> : <><Search className="w-3 h-3 mr-1" />Найти</>}
+                    </Button>
                   </div>
                 </div>
-              )}
-
-              {resolveError && (
-                <div className="p-3 rounded-lg border border-red-500/20 bg-red-500/5 text-xs text-red-400 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4" />
-                  {resolveError}
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-muted-foreground uppercase tracking-wider mb-1 block">Quantity</label>
-                  <Input
-                    value={quantityInput}
-                    onChange={(e) => setQuantityInput(e.target.value)}
-                    type="number"
-                    min="0"
-                    className="font-mono-data"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground uppercase tracking-wider mb-1 block">Buy Price (opt)</label>
-                  <Input
-                    value={priceInput}
-                    onChange={(e) => setPriceInput(e.target.value)}
-                    type="number"
-                    placeholder="0.00"
-                    className="font-mono-data"
-                  />
+                {resolved && (
+                  <div className="p-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5 space-y-2">
+                    <div className="flex items-center gap-2"><CheckCircle className="w-4 h-4 text-green-400" /><span className="text-xs text-green-400">Найдено</span></div>
+                    <div className="text-xs"><span className="text-muted-foreground">Актив:</span> {resolved.shortname} ({resolved.secid})</div>
+                  </div>
+                )}
+                {resolveError && (<div className="p-3 rounded-lg border border-red-500/20 bg-red-500/5 text-xs text-red-400 flex items-center gap-2"><AlertTriangle className="w-4 h-4" />{resolveError}</div>)}
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className="text-xs text-muted-foreground mb-1 block">Количество</label><Input value={quantityInput} onChange={(e) => setQuantityInput(e.target.value)} type="number" min="0" className="font-mono-data" /></div>
+                  <div><label className="text-xs text-muted-foreground mb-1 block">Цена покупки</label><Input value={priceInput} onChange={(e) => setPriceInput(e.target.value)} type="number" placeholder="0.00" className="font-mono-data" /></div>
                 </div>
               </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setAddDialogOpen(false)} className="text-xs">Cancel</Button>
-              <Button
-                data-testid="portfolio-add-holding-submit-button"
-                onClick={handleAddHolding}
-                disabled={adding || !isinInput.trim()}
-                className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/20 text-xs"
-              >
-                {adding ? <span className="spinner w-4 h-4" /> : 'Add to Portfolio'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setAddDialogOpen(false)} className="text-xs">Отмена</Button>
+                <Button onClick={handleAddHolding} disabled={adding || !isinInput.trim()} className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 text-xs">
+                  {adding ? <span className="spinner w-4 h-4" /> : 'Добавить'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       <ScrollArea className="flex-1">
@@ -745,54 +704,69 @@ function PortfolioPage() {
           ) : holdings.length === 0 ? (
             <div className="empty-state">
               <Briefcase className="w-10 h-10 opacity-30" />
-              <p className="text-sm">No holdings yet</p>
-              <p className="text-xs text-muted-foreground">Add your first MOEX holding by ISIN code</p>
+              <p className="text-sm">Портфель пуст</p>
+              <p className="text-xs text-muted-foreground">Нажмите Тинькофф для загрузки или добавьте вручную</p>
             </div>
           ) : (
             <table className="bloomberg-table">
               <thead>
                 <tr>
-                  <th>Asset</th>
-                  <th>SECID</th>
-                  <th>Type</th>
-                  <th className="text-right">Qty</th>
-                  <th className="text-right">Buy Price</th>
+                  <th>Актив</th>
+                  <th>Тикер</th>
+                  <th>Тип</th>
+                  <th className="text-right">Кол-во</th>
+                  <th className="text-right">Покупка</th>
+                  <th className="text-right">Сейчас</th>
+                  <th className="text-right">Стоимость</th>
+                  <th className="text-right">Прибыль/Убыток</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {holdings.map((h) => (
-                  <tr key={h.id}>
-                    <td>
-                      <div>
-                        <span className="font-medium">{h.shortname}</span>
-                        {h.is_liquidity_fund && <Badge className="badge-pending text-[10px] ml-2">LQDT</Badge>}
-                        <div className="text-[10px] text-muted-foreground mt-0.5">{h.isin}</div>
-                      </div>
-                    </td>
-                    <td className="font-mono-data text-cyan-400">{h.secid}</td>
-                    <td>
-                      <Badge variant="outline" className="text-[10px]">
-                        {h.asset_class}
-                      </Badge>
-                    </td>
-                    <td className="text-right font-mono-data tabular-nums">{h.quantity}</td>
-                    <td className="text-right font-mono-data tabular-nums">
-                      {h.buy_price ? h.buy_price.toFixed(2) : '—'}
-                    </td>
-                    <td>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 w-6 p-0 text-muted-foreground hover:text-red-400"
-                        onClick={() => handleDelete(h.id)}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
+                {holdings.map((h) => {
+                  const plClass = h.pl_absolute > 0 ? 'text-green-400' : h.pl_absolute < 0 ? 'text-red-400' : 'text-muted-foreground';
+                  const plS = h.pl_absolute > 0 ? '+' : '';
+                  const typeLabel = h.asset_class === 'stock' ? 'Акция' : h.asset_class === 'bond' ? 'Облигация' : h.asset_class === 'etf' ? 'Фонд' : h.asset_class === 'liquidity_fund' ? 'Ликв.' : h.asset_class;
+                  return (
+                    <tr key={h.id}>
+                      <td>
+                        <div>
+                          <span className="font-medium">{h.shortname}</span>
+                          {h.is_liquidity_fund && <Badge className="badge-pending text-[10px] ml-2">LQDT</Badge>}
+                          <div className="text-[10px] text-muted-foreground mt-0.5">{h.isin}</div>
+                        </div>
+                      </td>
+                      <td className="font-mono-data text-cyan-400">{h.secid}</td>
+                      <td><Badge variant="outline" className="text-[10px]">{typeLabel}</Badge></td>
+                      <td className="text-right font-mono-data tabular-nums">{h.quantity}</td>
+                      <td className="text-right font-mono-data tabular-nums">{(h.buy_price || 0).toLocaleString('ru-RU')}</td>
+                      <td className="text-right font-mono-data tabular-nums">{h.current_price > 0 ? h.current_price.toLocaleString('ru-RU') : '\u2014'}</td>
+                      <td className="text-right font-mono-data tabular-nums">{h.position_value > 0 ? h.position_value.toLocaleString('ru-RU') : '\u2014'}</td>
+                      <td className={'text-right font-mono-data tabular-nums ' + plClass}>
+                        {h.pl_absolute !== 0 ? (<>{plS}{h.pl_absolute.toLocaleString('ru-RU')} <div className="text-[10px]">{plS}{(h.pl_percent || 0).toFixed(1)}%</div></>) : '\u2014'}
+                      </td>
+                      <td>
+                        <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-muted-foreground hover:text-red-400" onClick={() => handleDelete(h.id)}>
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-cyan-500/20">
+                  <td colSpan={4} className="font-semibold text-cyan-400">ИТОГО</td>
+                  <td className="text-right font-mono-data tabular-nums font-semibold">{(summary.total_invested || 0).toLocaleString('ru-RU')}</td>
+                  <td></td>
+                  <td className="text-right font-mono-data tabular-nums font-semibold">{(summary.total_current || 0).toLocaleString('ru-RU')}</td>
+                  <td className={'text-right font-mono-data tabular-nums font-semibold ' + plColor}>
+                    {plSign}{(summary.total_pl || 0).toLocaleString('ru-RU')}
+                    <div className="text-[10px]">{plSign}{(summary.total_pl_pct || 0).toFixed(1)}%</div>
+                  </td>
+                  <td></td>
+                </tr>
+              </tfoot>
             </table>
           )}
         </div>
@@ -800,6 +774,8 @@ function PortfolioPage() {
     </div>
   );
 }
+
+
 
 // ============================================
 // News Page

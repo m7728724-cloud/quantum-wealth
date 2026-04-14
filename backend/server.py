@@ -269,6 +269,66 @@ async def delete_holding(holding_id: str, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/portfolio/holdings-enriched")
+async def get_holdings_enriched(request: Request):
+    """Get all holdings with current prices and P&L calculations"""
+    require_auth(request)
+    holdings = list(db.holdings.find().sort("created_at", DESCENDING))
+    
+    total_invested = 0
+    total_current = 0
+    enriched = []
+    
+    for h in holdings:
+        doc = serialize_doc(h)
+        secid = doc.get("secid", "")
+        buy_price = doc.get("buy_price", 0) or 0
+        current_price = doc.get("current_price", 0) or 0
+        qty = doc.get("quantity", 0) or 0
+        
+        # Try to get current price from MOEX
+        if secid and not doc.get("is_liquidity_fund", False):
+            try:
+                market_data = get_security_market_data(secid)
+                if market_data and market_data.get("LAST"):
+                    current_price = float(market_data["LAST"])
+                elif market_data and market_data.get("PREVPRICE"):
+                    current_price = float(market_data["PREVPRICE"])
+            except Exception:
+                pass
+        
+        invested = buy_price * qty
+        current_val = current_price * qty
+        pl_abs = current_val - invested if buy_price > 0 else 0
+        pl_pct = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0
+        
+        total_invested += invested
+        total_current += current_val
+        
+        doc["current_price"] = round(current_price, 2)
+        doc["position_value"] = round(current_val, 2)
+        doc["pl_absolute"] = round(pl_abs, 2)
+        doc["pl_percent"] = round(pl_pct, 2)
+        doc["invested"] = round(invested, 2)
+        enriched.append(doc)
+    
+    total_pl = total_current - total_invested
+    total_pl_pct = ((total_current - total_invested) / total_invested * 100) if total_invested > 0 else 0
+    
+    return {
+        "holdings": enriched,
+        "summary": {
+            "total_invested": round(total_invested, 2),
+            "total_current": round(total_current, 2),
+            "total_pl": round(total_pl, 2),
+            "total_pl_pct": round(total_pl_pct, 2),
+            "positions_count": len(enriched),
+            "profitable": len([h for h in enriched if h.get("pl_absolute", 0) > 0]),
+            "losing": len([h for h in enriched if h.get("pl_absolute", 0) < 0]),
+        }
+    }
+
+
 # ============================================
 # News Feed
 # ============================================
