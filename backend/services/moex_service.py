@@ -1,7 +1,7 @@
 """MOEX ISS API Service - ISIN Resolution & Market Data"""
 import requests
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -149,3 +149,91 @@ def get_security_market_data(secid: str) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"Market data error for {secid}: {e}")
         return None
+
+
+def get_top_moex_stocks() -> List[Dict[str, Any]]:
+    """Fetch snapshot for popular MOEX stocks."""
+    tickers = [
+        "SBER", "LKOH", "GAZP", "NVTK", "ROSN", "YNDX", "MGNT", "GMKN", "TATN", "SNGS",
+        "VTBR", "ALRS", "MAGN", "CHMF", "NLMK", "PHOR", "AFKS", "OZON", "FIVE", "PIKK"
+    ]
+    securities = ",".join(tickers)
+    url = (
+        f"{MOEX_BASE}/engines/stock/markets/shares/boards/TQBR/securities.json"
+        f"?securities={securities}&iss.meta=off&iss.only=marketdata,securities"
+        f"&marketdata.columns=SECID,LAST,CHANGE,LASTTOPREVPRICE,VOLUME"
+        f"&securities.columns=SECID,SHORTNAME"
+    )
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+        sec_rows = payload.get("securities", {}).get("data", [])
+        sec_cols = payload.get("securities", {}).get("columns", [])
+        md_rows = payload.get("marketdata", {}).get("data", [])
+        md_cols = payload.get("marketdata", {}).get("columns", [])
+        names = {row[0]: dict(zip(sec_cols, row)).get("SHORTNAME", row[0]) for row in sec_rows if row}
+        result = []
+        for row in md_rows:
+            mapped = dict(zip(md_cols, row))
+            secid = mapped.get("SECID")
+            if not secid:
+                continue
+            result.append({
+                "secid": secid,
+                "name": names.get(secid, secid),
+                "price": mapped.get("LAST"),
+                "change_pct": mapped.get("LASTTOPREVPRICE"),
+                "volume": mapped.get("VOLUME"),
+            })
+        return result
+    except Exception as e:
+        logger.error(f"Failed to fetch top MOEX stocks: {e}")
+        return []
+
+
+def get_top_moex_bonds() -> List[Dict[str, Any]]:
+    """Fetch snapshot for major OFZ bonds."""
+    isin_list = ["SU26238RMFS4", "SU26240RMFS0", "SU26233RMFS5", "SU26226RMFS0"]
+    securities = ",".join(isin_list)
+    url = (
+        f"{MOEX_BASE}/engines/stock/markets/bonds/boards/TQOB/securities.json"
+        f"?securities={securities}&iss.meta=off&iss.only=marketdata,securities"
+        f"&marketdata.columns=SECID,LAST,YIELDATWAPRICE,YIELD,CHANGE"
+        f"&securities.columns=SECID,SHORTNAME,COUPONPERCENT,YIELDATPREVWAPRICE"
+    )
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        payload = resp.json()
+        sec_rows = payload.get("securities", {}).get("data", [])
+        sec_cols = payload.get("securities", {}).get("columns", [])
+        md_rows = payload.get("marketdata", {}).get("data", [])
+        md_cols = payload.get("marketdata", {}).get("columns", [])
+
+        sec_map = {}
+        for row in sec_rows:
+            mapped = dict(zip(sec_cols, row))
+            secid = mapped.get("SECID")
+            if secid:
+                sec_map[secid] = mapped
+
+        result = []
+        for row in md_rows:
+            mapped = dict(zip(md_cols, row))
+            secid = mapped.get("SECID")
+            if not secid:
+                continue
+            s = sec_map.get(secid, {})
+            yield_pct = mapped.get("YIELDATWAPRICE") or mapped.get("YIELD") or s.get("YIELDATPREVWAPRICE")
+            result.append({
+                "secid": secid,
+                "name": s.get("SHORTNAME", secid),
+                "price": mapped.get("LAST"),
+                "coupon_pct": s.get("COUPONPERCENT"),
+                "yield_pct": yield_pct,
+            })
+        return result
+    except Exception as e:
+        logger.error(f"Failed to fetch top MOEX bonds: {e}")
+        return []

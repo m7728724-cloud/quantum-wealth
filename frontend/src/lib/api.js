@@ -69,6 +69,11 @@ export const aiAPI = {
   getInsight: (data) => api.post('/api/ai/portfolio-insight', data || {}),
 };
 
+export const marketAPI = {
+  getTopMoex: () => api.get('/api/market/top-moex'),
+  getTopBonds: () => api.get('/api/market/top-bonds'),
+};
+
 // Signals
 export const signalsAPI = {
   getSignals: (limit) => api.get('/api/signals', { params: { limit } }),

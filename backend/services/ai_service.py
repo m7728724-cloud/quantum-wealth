@@ -62,7 +62,9 @@ async def analyze_portfolio(
     news_items: List[Dict],
     memory_items: List[Dict] = None,
     safeguard_rules: List[Dict] = None,
-    custom_prompt: str = None
+    custom_prompt: str = None,
+    market_stocks: List[Dict] = None,
+    market_bonds: List[Dict] = None
 ) -> Dict[str, Any]:
     """Generate AI portfolio analysis using Claude via OpenRouter"""
     try:
@@ -82,12 +84,12 @@ CRITICAL RULES:
 Always respond in valid JSON with this exact schema:
 {
   "portfolio_summary": "string - overall portfolio health assessment",
-  "risk_assessment": "low|medium|high|critical",
-  "macro_view": "string - geopolitical and macro analysis",
-  "insights": ["array of specific insight strings"],
+  "sell_recommendations": [{"ticker": "string", "reason": "string"}],
+  "buy_recommendations": [{"ticker": "string", "price": 0, "reason": "string", "dividend_yield": 0}],
+  "bond_recommendations": [{"ticker": "string", "name": "string", "yield_pct": 0, "reason": "string"}],
   "action_items": ["array of recommended actions"],
-  "liquidity_fund_note": "string - only if liquidity funds present, explain yield/cash treatment",
-  "safeguards_applied": ["array of relevant safeguard rules that were considered"],
+  "risk_assessment": "low|medium|high",
+  "market_comment": "string - daily market context for MOEX",
   "confidence": 0.0-1.0
 }"""
 
@@ -115,6 +117,9 @@ Always respond in valid JSON with this exact schema:
                 sg_lines.append(f"- [{s.get('severity', 'medium')}] {s.get('rule_text', '')}")
             safeguard_text = "\n".join(sg_lines)
 
+        stocks_text = json.dumps(market_stocks or [], indent=2, ensure_ascii=False)
+        bonds_text = json.dumps(market_bonds or [], indent=2, ensure_ascii=False)
+
         prompt = f"""FULL PORTFOLIO ANALYSIS REQUEST
 
 PORTFOLIO HOLDINGS:
@@ -127,7 +132,13 @@ ADAPTIVE MEMORY (Past Interactions):
 {memory_text}
 
 ACTIVE SAFEGUARD RULES:
-{safeguard_text}"""
+{safeguard_text}
+
+MOEX TOP STOCKS SNAPSHOT:
+{stocks_text}
+
+MOEX OFZ SNAPSHOT:
+{bonds_text}"""
 
         if custom_prompt:
             prompt += f"\n\nADDITIONAL USER FOCUS:\n{custom_prompt}"
@@ -144,9 +155,12 @@ ACTIVE SAFEGUARD RULES:
         except json.JSONDecodeError:
             return {
                 "portfolio_summary": cleaned[:500],
-                "risk_assessment": "unknown",
-                "insights": ["AI response could not be parsed as structured JSON"],
+                "risk_assessment": "medium",
+                "sell_recommendations": [],
+                "buy_recommendations": [],
+                "bond_recommendations": [],
                 "action_items": [],
+                "market_comment": "Ответ AI не удалось структурировать корректно",
                 "confidence": 0.3,
                 "raw_response": cleaned,
                 "generated_at": datetime.now().isoformat()

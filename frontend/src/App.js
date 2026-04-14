@@ -263,10 +263,35 @@ function DashboardPage() {
   const [allocation, setAllocation] = useState([]);
   const [enriched, setEnriched] = useState(null);
   const [aiTip, setAiTip] = useState(null);
+  const [aiTipTime, setAiTipTime] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const AI_TIP_KEY = 'qw_ai_tip';
+  const AI_TIP_TIME_KEY = 'qw_ai_tip_time';
+
+  const formatAiTime = (isoTime) => {
+    if (!isoTime) return '';
+    const d = new Date(isoTime);
+    return d.toLocaleString('ru-RU', {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
 
   useEffect(() => {
     loadAll();
+    try {
+      const storedTipRaw = localStorage.getItem(AI_TIP_KEY);
+      const storedTime = localStorage.getItem(AI_TIP_TIME_KEY);
+      if (storedTipRaw && storedTime) {
+        setAiTip(JSON.parse(storedTipRaw));
+        setAiTipTime(storedTime);
+      }
+    } catch (e) {
+      console.error('AI tip restore error:', e);
+    }
   }, []);
 
   const loadAll = async () => {
@@ -293,10 +318,16 @@ function DashboardPage() {
       setAiTip({ loading: true });
       const res = await aiAPI.getInsight({});
       setAiTip(res.data);
+      const nowIso = new Date().toISOString();
+      setAiTipTime(nowIso);
+      localStorage.setItem(AI_TIP_KEY, JSON.stringify(res.data));
+      localStorage.setItem(AI_TIP_TIME_KEY, nowIso);
     } catch (err) {
       setAiTip({ error: 'Ошибка AI анализа' });
     }
   };
+
+  const isAiStale = aiTipTime ? (Date.now() - new Date(aiTipTime).getTime()) > 4 * 60 * 60 * 1000 : false;
 
   if (loading) return <div className="flex items-center justify-center h-full"><div className="spinner" /></div>;
 
@@ -467,10 +498,64 @@ function DashboardPage() {
             </Button>
           </div>
           <div className="panel-body">
+            {aiTipTime && (
+              <div className="mb-3 text-xs text-muted-foreground">
+                Последний анализ: {formatAiTime(aiTipTime)}
+                {isAiStale && <span className="ml-2 text-amber-400">Данные устарели, обновите</span>}
+              </div>
+            )}
             {aiTip && !aiTip.loading && !aiTip.error ? (
               <div className="space-y-3">
                 {aiTip.portfolio_summary && (
                   <p className="text-sm">{aiTip.portfolio_summary}</p>
+                )}
+                {aiTip.market_comment && (
+                  <div className="text-xs text-blue-300">
+                    📊 {aiTip.market_comment}
+                  </div>
+                )}
+                {aiTip.sell_recommendations?.length > 0 && (
+                  <div>
+                    <p className="text-xs text-red-300 uppercase tracking-wider mb-2">🔴 Рассмотреть продажу</p>
+                    <div className="space-y-2">
+                      {aiTip.sell_recommendations.map((item, i) => (
+                        <div key={i} className="p-2 rounded border border-red-500/20 bg-red-500/5">
+                          <div className="text-sm font-mono-data text-red-300">{item.ticker}</div>
+                          <div className="text-xs text-muted-foreground">{item.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {aiTip.buy_recommendations?.length > 0 && (
+                  <div>
+                    <p className="text-xs text-green-300 uppercase tracking-wider mb-2">🟢 Купить на рынке</p>
+                    <div className="space-y-2">
+                      {aiTip.buy_recommendations.map((item, i) => (
+                        <div key={i} className="p-2 rounded border border-green-500/20 bg-green-500/5">
+                          <div className="text-sm font-mono-data text-green-300">
+                            {item.ticker} · {item.price ? `${Number(item.price).toLocaleString('ru-RU')} ₽` : 'цена не указана'}
+                          </div>
+                          <div className="text-xs text-muted-foreground">Дивдоходность: {item.dividend_yield ?? '—'}%</div>
+                          <div className="text-xs text-muted-foreground">{item.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {aiTip.bond_recommendations?.length > 0 && (
+                  <div>
+                    <p className="text-xs text-cyan-300 uppercase tracking-wider mb-2">💼 Облигации</p>
+                    <div className="space-y-2">
+                      {aiTip.bond_recommendations.map((item, i) => (
+                        <div key={i} className="p-2 rounded border border-cyan-500/20 bg-cyan-500/5">
+                          <div className="text-sm font-mono-data text-cyan-300">{item.ticker} · {item.name}</div>
+                          <div className="text-xs text-muted-foreground">Доходность: {item.yield_pct ?? '—'}%</div>
+                          <div className="text-xs text-muted-foreground">{item.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
                 {aiTip.action_items?.length > 0 && (
                   <div>
@@ -487,7 +572,7 @@ function DashboardPage() {
                 )}
                 {aiTip.risk_assessment && (
                   <Badge className={`text-xs ${aiTip.risk_assessment === 'low' ? 'bg-green-500/10 text-green-400' : aiTip.risk_assessment === 'medium' ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/10 text-red-400'}`}>
-                    Риск: {aiTip.risk_assessment === 'low' ? 'Низкий' : aiTip.risk_assessment === 'medium' ? 'Средний' : 'Высокий'}
+                    ⚠️ Риск: {aiTip.risk_assessment === 'low' ? 'Низкий' : aiTip.risk_assessment === 'medium' ? 'Средний' : 'Высокий'}
                   </Badge>
                 )}
               </div>

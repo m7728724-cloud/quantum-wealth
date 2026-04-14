@@ -28,7 +28,7 @@ from models import (
     AIInsightRequest, MemoryLogCreate, SafeguardRuleCreate,
     UserLogin, TokenResponse, UserCreate, UserPasswordUpdate, UserTinkoffTokenUpdate
 )
-from services.moex_service import resolve_isin, get_security_market_data
+from services.moex_service import resolve_isin, get_security_market_data, get_top_moex_stocks, get_top_moex_bonds
 from services.ai_service import analyze_portfolio, generate_safeguard_rules, ai_filter_signal
 from services.news_service import fetch_all_feeds
 from services.memory_service import (
@@ -480,6 +480,21 @@ async def get_news(request: Request, region: Optional[str] = None, limit: int = 
 
 
 # ============================================
+# Market Scanner
+# ============================================
+@app.get("/api/market/top-moex")
+async def get_top_moex_endpoint(request: Request):
+    require_auth(request)
+    return get_top_moex_stocks()
+
+
+@app.get("/api/market/top-bonds")
+async def get_top_bonds_endpoint(request: Request):
+    require_auth(request)
+    return get_top_moex_bonds()
+
+
+# ============================================
 # AI Insights
 # ============================================
 @app.post("/api/ai/portfolio-insight")
@@ -508,13 +523,19 @@ async def get_portfolio_insight(request: Request, data: AIInsightRequest = None)
     safeguards = list(db.safeguard_rules.find({"active": True, "user_id": username}))
     safeguard_data = serialize_doc(safeguards)
     
+    # Market scanner context
+    market_stocks = get_top_moex_stocks()
+    market_bonds = get_top_moex_bonds()
+
     # Generate analysis
     result = await analyze_portfolio(
         holdings=holdings_data,
         news_items=news_data,
         memory_items=memory_data,
         safeguard_rules=safeguard_data,
-        custom_prompt=data.custom_prompt
+        custom_prompt=data.custom_prompt,
+        market_stocks=market_stocks,
+        market_bonds=market_bonds
     )
     
     # Log this interaction in memory
