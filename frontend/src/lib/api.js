@@ -40,6 +40,14 @@ export const authAPI = {
   me: () => api.get('/api/auth/me'),
 };
 
+export const usersAPI = {
+  list: () => api.get('/api/users'),
+  create: (data) => api.post('/api/users', data),
+  updatePassword: (username, password) => api.put(`/api/users/${encodeURIComponent(username)}/password`, { password }),
+  updateTinkoffToken: (username, tinkoffToken) =>
+    api.put(`/api/users/${encodeURIComponent(username)}/tinkoff-token`, { tinkoff_token: tinkoffToken }),
+};
+
 // Portfolio
 export const portfolioAPI = {
   getHoldings: () => api.get('/api/portfolio/holdings'),

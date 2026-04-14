@@ -26,7 +26,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from models import (
     HoldingCreate, TradeCreate, TradeUpdate, WebhookSignal,
     AIInsightRequest, MemoryLogCreate, SafeguardRuleCreate,
-    UserLogin, TokenResponse
+    UserLogin, TokenResponse, UserCreate, UserPasswordUpdate, UserTinkoffTokenUpdate
 )
 from services.moex_service import resolve_isin, get_security_market_data
 from services.ai_service import analyze_portfolio, generate_safeguard_rules, ai_filter_signal
@@ -100,18 +100,47 @@ def seed_admin():
         logger.info("Admin account already exists")
 
 
+def run_user_data_migration():
+    """Attach legacy records to admin user."""
+    collections = ["holdings", "trades", "memory", "safeguard_rules"]
+    for collection in collections:
+        result = db[collection].update_many(
+            {"user_id": {"$exists": False}},
+            {"$set": {"user_id": "Vika-net1"}}
+        )
+        if result.modified_count:
+            logger.info(f"Migrated {result.modified_count} records in {collection} to Vika-net1")
+
+
+def get_current_user_doc(request: Request):
+    username = require_auth(request)
+    user = db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+def require_admin_user(user: dict):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     logger.info("Starting Quantum Wealth & BO Platform...")
     seed_admin()
+    run_user_data_migration()
     # Create indexes
     db.holdings.create_index("isin")
-    db.holdings.create_index("user")
+    db.holdings.create_index([("user_id", 1), ("isin", 1)])
+    db.trades.create_index([("user_id", 1), ("created_at", DESCENDING)])
     db.trades.create_index([("created_at", DESCENDING)])
     db.signals.create_index([("received_at", DESCENDING)])
+    db.memory.create_index([("user_id", 1), ("created_at", DESCENDING)])
     db.memory.create_index([("created_at", DESCENDING)])
     db.news_cache.create_index([("fetched_at", DESCENDING)])
+    db.safeguard_rules.create_index([("user_id", 1), ("active", 1)])
     db.safeguard_rules.create_index("active")
     logger.info("Database indexes created")
     yield
@@ -183,8 +212,82 @@ async def get_me(request: Request):
         "id": str(user["_id"]),
         "username": user["username"],
         "role": user.get("role", "user"),
-        "created_at": user.get("created_at", "")
+        "created_at": user.get("created_at", ""),
+        "has_tinkoff_token": bool(user.get("tinkoff_token"))
     }
+
+
+# ============================================
+# User Management (Admin)
+# ============================================
+@app.get("/api/users")
+async def list_users(request: Request):
+    current = get_current_user_doc(request)
+    require_admin_user(current)
+    users = list(db.users.find().sort("created_at", DESCENDING))
+    result = []
+    for user in users:
+        result.append({
+            "id": str(user["_id"]),
+            "username": user.get("username"),
+            "role": user.get("role", "user"),
+            "created_at": user.get("created_at", ""),
+            "has_tinkoff_token": bool(user.get("tinkoff_token"))
+        })
+    return result
+
+
+@app.post("/api/users")
+async def create_user(request: Request, data: UserCreate):
+    current = get_current_user_doc(request)
+    require_admin_user(current)
+    username = data.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+    if db.users.find_one({"username": username}):
+        raise HTTPException(status_code=400, detail="User already exists")
+    role = "admin" if data.role == "admin" else "user"
+    doc = {
+        "username": username,
+        "password_hash": hash_password(data.password),
+        "role": role,
+        "tinkoff_token": (data.tinkoff_token or "").strip(),
+        "created_at": datetime.now().isoformat()
+    }
+    result = db.users.insert_one(doc)
+    return {
+        "id": str(result.inserted_id),
+        "username": username,
+        "role": role,
+        "has_tinkoff_token": bool(doc["tinkoff_token"])
+    }
+
+
+@app.put("/api/users/{username}/password")
+async def set_user_password(username: str, request: Request, data: UserPasswordUpdate):
+    current = get_current_user_doc(request)
+    require_admin_user(current)
+    result = db.users.update_one(
+        {"username": username},
+        {"$set": {"password_hash": hash_password(data.password)}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "ok", "username": username}
+
+
+@app.put("/api/users/{username}/tinkoff-token")
+async def set_user_tinkoff_token(username: str, request: Request, data: UserTinkoffTokenUpdate):
+    current = get_current_user_doc(request)
+    require_admin_user(current)
+    token = (data.tinkoff_token or "").strip()
+    result = db.users.update_one(
+        {"username": username},
+        {"$set": {"tinkoff_token": token}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "ok", "username": username, "has_tinkoff_token": bool(token)}
 
 
 # ============================================
@@ -208,7 +311,7 @@ async def resolve_isin_endpoint(request: Request, data: dict = Body(...)):
 @app.post("/api/portfolio/holdings")
 async def add_holding(request: Request, data: HoldingCreate):
     """Add a portfolio holding - auto-resolves ISIN via MOEX"""
-    require_auth(request)
+    username = require_auth(request)
     isin = data.isin.strip().upper()
     
     # Resolve ISIN
@@ -217,7 +320,7 @@ async def add_holding(request: Request, data: HoldingCreate):
         raise HTTPException(status_code=404, detail=f"Could not resolve ISIN: {isin}. Please check the code.")
     
     # Check for duplicate
-    existing = db.holdings.find_one({"isin": isin})
+    existing = db.holdings.find_one({"isin": isin, "user_id": username})
     if existing:
         # Update quantity
         db.holdings.update_one(
@@ -229,6 +332,7 @@ async def add_holding(request: Request, data: HoldingCreate):
         return serialize_doc(updated)
     
     holding = {
+        "user_id": username,
         "isin": isin,
         "secid": resolved["secid"],
         "shortname": resolved["shortname"],
@@ -251,17 +355,17 @@ async def add_holding(request: Request, data: HoldingCreate):
 @app.get("/api/portfolio/holdings")
 async def get_holdings(request: Request):
     """Get all portfolio holdings with resolved names"""
-    require_auth(request)
-    holdings = list(db.holdings.find().sort("created_at", DESCENDING))
+    username = require_auth(request)
+    holdings = list(db.holdings.find({"user_id": username}).sort("created_at", DESCENDING))
     return serialize_doc(holdings)
 
 
 @app.delete("/api/portfolio/holdings/{holding_id}")
 async def delete_holding(holding_id: str, request: Request):
     """Delete a holding"""
-    require_auth(request)
+    username = require_auth(request)
     try:
-        result = db.holdings.delete_one({"_id": ObjectId(holding_id)})
+        result = db.holdings.delete_one({"_id": ObjectId(holding_id), "user_id": username})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Holding not found")
         return {"status": "deleted", "id": holding_id}
@@ -272,8 +376,8 @@ async def delete_holding(holding_id: str, request: Request):
 @app.get("/api/portfolio/holdings-enriched")
 async def get_holdings_enriched(request: Request):
     """Get all holdings with current prices and P&L calculations"""
-    require_auth(request)
-    holdings = list(db.holdings.find().sort("created_at", DESCENDING))
+    username = require_auth(request)
+    holdings = list(db.holdings.find({"user_id": username}).sort("created_at", DESCENDING))
     
     total_invested = 0
     total_current = 0
@@ -381,12 +485,12 @@ async def get_news(request: Request, region: Optional[str] = None, limit: int = 
 @app.post("/api/ai/portfolio-insight")
 async def get_portfolio_insight(request: Request, data: AIInsightRequest = None):
     """Generate AI-powered portfolio analysis"""
-    require_auth(request)
+    username = require_auth(request)
     if data is None:
         data = AIInsightRequest()
     
     # Get holdings
-    holdings = list(db.holdings.find())
+    holdings = list(db.holdings.find({"user_id": username}))
     if not holdings:
         return {"error": "No holdings in portfolio. Add holdings first."}
     
@@ -397,11 +501,11 @@ async def get_portfolio_insight(request: Request, data: AIInsightRequest = None)
     news_data = serialize_doc(news)
     
     # Get memory
-    memories = list(db.memory.find().sort("created_at", DESCENDING).limit(10))
+    memories = list(db.memory.find({"user_id": username}).sort("created_at", DESCENDING).limit(10))
     memory_data = serialize_doc(memories)
     
     # Get safeguard rules
-    safeguards = list(db.safeguard_rules.find({"active": True}))
+    safeguards = list(db.safeguard_rules.find({"active": True, "user_id": username}))
     safeguard_data = serialize_doc(safeguards)
     
     # Generate analysis
@@ -420,7 +524,8 @@ async def get_portfolio_insight(request: Request, data: AIInsightRequest = None)
             interaction_type="portfolio_analysis",
             content=result.get("portfolio_summary", "Analysis generated"),
             outcome=result.get("risk_assessment", "unknown"),
-            tags=["ai_analysis", "portfolio"]
+            tags=["ai_analysis", "portfolio"],
+            user_id=username
         )
     
     return result
@@ -441,7 +546,9 @@ async def receive_webhook(request: Request, data: WebhookSignal = None):
     else:
         body = data.dict()
     
+    username = get_current_user(request)
     signal = {
+        "user_id": username,
         "symbol": body.get("symbol", body.get("ticker", "UNKNOWN")),
         "action": body.get("action", body.get("strategy", {}).get("order_action", "UNKNOWN")).upper() if isinstance(body.get("action", body.get("strategy", {}).get("order_action", "UNKNOWN")), str) else "UNKNOWN",
         "timeframe": body.get("timeframe", body.get("interval", "")),
@@ -463,9 +570,9 @@ async def receive_webhook(request: Request, data: WebhookSignal = None):
 @app.get("/api/signals")
 async def get_signals(request: Request, limit: int = 50):
     """Get received TradingView signals"""
-    require_auth(request)
+    username = require_auth(request)
     signals = list(
-        db.signals.find()
+        db.signals.find({"$or": [{"user_id": username}, {"user_id": None}]})
         .sort("received_at", DESCENDING)
         .limit(limit)
     )
@@ -475,9 +582,9 @@ async def get_signals(request: Request, limit: int = 50):
 @app.delete("/api/signals/{signal_id}")
 async def delete_signal(signal_id: str, request: Request):
     """Delete a signal"""
-    require_auth(request)
+    username = require_auth(request)
     try:
-        result = db.signals.delete_one({"_id": ObjectId(signal_id)})
+        result = db.signals.delete_one({"_id": ObjectId(signal_id), "$or": [{"user_id": username}, {"user_id": None}]})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Signal not found")
         return {"status": "deleted", "id": signal_id}
@@ -491,8 +598,9 @@ async def delete_signal(signal_id: str, request: Request):
 @app.post("/api/trades")
 async def create_trade(request: Request, data: TradeCreate):
     """Log a binary options trade"""
-    require_auth(request)
+    username = require_auth(request)
     trade = {
+        "user_id": username,
         "asset": data.asset,
         "direction": data.direction.value,
         "expiry_seconds": data.expiry_seconds,
@@ -523,8 +631,8 @@ async def create_trade(request: Request, data: TradeCreate):
 @app.get("/api/trades")
 async def get_trades(request: Request, result_filter: Optional[str] = None, limit: int = 100):
     """Get trade journal entries"""
-    require_auth(request)
-    query = {}
+    username = require_auth(request)
+    query = {"user_id": username}
     if result_filter:
         query["result"] = result_filter.upper()
     
@@ -539,7 +647,7 @@ async def get_trades(request: Request, result_filter: Optional[str] = None, limi
 @app.put("/api/trades/{trade_id}")
 async def update_trade(trade_id: str, request: Request, data: TradeUpdate):
     """Update trade result (Win/Loss/Draw)"""
-    require_auth(request)
+    username = require_auth(request)
     try:
         update = {
             "result": data.result.value,
@@ -549,14 +657,14 @@ async def update_trade(trade_id: str, request: Request, data: TradeUpdate):
             update["notes"] = data.notes
         
         result = db.trades.update_one(
-            {"_id": ObjectId(trade_id)},
+            {"_id": ObjectId(trade_id), "user_id": username},
             {"$set": update}
         )
         
         if result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Trade not found")
         
-        updated = db.trades.find_one({"_id": ObjectId(trade_id)})
+        updated = db.trades.find_one({"_id": ObjectId(trade_id), "user_id": username})
         return serialize_doc(updated)
     except HTTPException:
         raise
@@ -567,18 +675,18 @@ async def update_trade(trade_id: str, request: Request, data: TradeUpdate):
 @app.get("/api/trades/stats")
 async def get_trade_stats(request: Request):
     """Get trading statistics with detailed analytics"""
-    require_auth(request)
-    total = db.trades.count_documents({})
-    wins = db.trades.count_documents({"result": "WIN"})
-    losses = db.trades.count_documents({"result": "LOSS"})
-    draws = db.trades.count_documents({"result": "DRAW"})
-    pending = db.trades.count_documents({"result": "PENDING"})
+    username = require_auth(request)
+    total = db.trades.count_documents({"user_id": username})
+    wins = db.trades.count_documents({"user_id": username, "result": "WIN"})
+    losses = db.trades.count_documents({"user_id": username, "result": "LOSS"})
+    draws = db.trades.count_documents({"user_id": username, "result": "DRAW"})
+    pending = db.trades.count_documents({"user_id": username, "result": "PENDING"})
     
     win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
     
     # Asset breakdown
     asset_pipeline = [
-        {"$match": {"result": {"$in": ["WIN", "LOSS"]}}},
+        {"$match": {"user_id": username, "result": {"$in": ["WIN", "LOSS"]}}},
         {"$group": {
             "_id": "$asset",
             "wins": {"$sum": {"$cond": [{"$eq": ["$result", "WIN"]}, 1, 0]}},
@@ -590,7 +698,7 @@ async def get_trade_stats(request: Request):
     
     # Direction breakdown
     direction_pipeline = [
-        {"$match": {"result": {"$in": ["WIN", "LOSS"]}}},
+        {"$match": {"user_id": username, "result": {"$in": ["WIN", "LOSS"]}}},
         {"$group": {
             "_id": "$direction",
             "wins": {"$sum": {"$cond": [{"$eq": ["$result", "WIN"]}, 1, 0]}},
@@ -602,7 +710,7 @@ async def get_trade_stats(request: Request):
     
     # Expiry breakdown
     expiry_pipeline = [
-        {"$match": {"result": {"$in": ["WIN", "LOSS"]}}},
+        {"$match": {"user_id": username, "result": {"$in": ["WIN", "LOSS"]}}},
         {"$group": {
             "_id": "$expiry_seconds",
             "wins": {"$sum": {"$cond": [{"$eq": ["$result", "WIN"]}, 1, 0]}},
@@ -615,7 +723,7 @@ async def get_trade_stats(request: Request):
     # Recent trade results for chart (last 20)
     recent_trades = list(
         db.trades.find(
-            {"result": {"$in": ["WIN", "LOSS"]}},
+            {"user_id": username, "result": {"$in": ["WIN", "LOSS"]}},
             {"result": 1, "asset": 1, "created_at": 1, "direction": 1}
         ).sort("created_at", DESCENDING).limit(20)
     )
@@ -645,8 +753,9 @@ async def get_trade_stats(request: Request):
 @app.get("/api/portfolio/allocation")
 async def get_portfolio_allocation(request: Request):
     """Get portfolio allocation breakdown by asset class"""
-    require_auth(request)
+    username = require_auth(request)
     pipeline = [
+        {"$match": {"user_id": username}},
         {"$group": {
             "_id": "$asset_class",
             "count": {"$sum": 1},
@@ -664,9 +773,9 @@ async def get_portfolio_allocation(request: Request):
 @app.get("/api/memory")
 async def get_memory_entries(request: Request, limit: int = 50):
     """Get memory log entries"""
-    require_auth(request)
+    username = require_auth(request)
     memories = list(
-        db.memory.find()
+        db.memory.find({"user_id": username})
         .sort("created_at", DESCENDING)
         .limit(limit)
     )
@@ -676,13 +785,14 @@ async def get_memory_entries(request: Request, limit: int = 50):
 @app.post("/api/memory")
 async def create_memory_entry(request: Request, data: MemoryLogCreate):
     """Log a memory entry"""
-    require_auth(request)
+    username = require_auth(request)
     entry = log_memory(
         db,
         interaction_type=data.interaction_type,
         content=data.content,
         outcome=data.outcome,
-        tags=data.tags
+        tags=data.tags,
+        user_id=username
     )
     return serialize_doc(entry)
 
@@ -690,9 +800,9 @@ async def create_memory_entry(request: Request, data: MemoryLogCreate):
 @app.get("/api/safeguards")
 async def get_safeguard_rules(request: Request):
     """Get all safeguard rules"""
-    require_auth(request)
+    username = require_auth(request)
     rules = list(
-        db.safeguard_rules.find()
+        db.safeguard_rules.find({"user_id": username})
         .sort("created_at", DESCENDING)
     )
     return serialize_doc(rules)
@@ -701,29 +811,30 @@ async def get_safeguard_rules(request: Request):
 @app.post("/api/safeguards/generate")
 async def generate_safeguards(request: Request):
     """AI-analyze losses and generate new safeguard rules"""
-    require_auth(request)
+    username = require_auth(request)
     # Get loss trades
-    loss_trades = list(db.trades.find({"result": "LOSS"}).sort("created_at", DESCENDING).limit(50))
+    loss_trades = list(db.trades.find({"result": "LOSS", "user_id": username}).sort("created_at", DESCENDING).limit(50))
     
     if not loss_trades:
         return {"message": "No loss trades found. Log some trades with LOSS result first.", "rules": []}
     
     loss_data = serialize_doc(loss_trades)
-    existing_rules = list(db.safeguard_rules.find({"active": True}))
+    existing_rules = list(db.safeguard_rules.find({"active": True, "user_id": username}))
     existing_data = serialize_doc(existing_rules)
     
     # Generate rules via AI
     new_rules = await generate_safeguard_rules(loss_data, existing_data)
     
     # Save to DB
-    saved = save_safeguard_rules(db, new_rules)
+    saved = save_safeguard_rules(db, new_rules, user_id=username)
     
     # Log in memory
     log_memory(
         db,
         interaction_type="safeguard_generation",
         content=f"Generated {len(saved)} new safeguard rules from {len(loss_trades)} loss trades",
-        tags=["safeguard", "ai_generated"]
+        tags=["safeguard", "ai_generated"],
+        user_id=username
     )
     
     return {"rules": serialize_doc(saved), "analyzed_losses": len(loss_trades)}
@@ -732,19 +843,19 @@ async def generate_safeguards(request: Request):
 @app.put("/api/safeguards/{rule_id}/toggle")
 async def toggle_safeguard(rule_id: str, request: Request):
     """Toggle a safeguard rule active/inactive"""
-    require_auth(request)
+    username = require_auth(request)
     try:
-        rule = db.safeguard_rules.find_one({"_id": ObjectId(rule_id)})
+        rule = db.safeguard_rules.find_one({"_id": ObjectId(rule_id), "user_id": username})
         if not rule:
             raise HTTPException(status_code=404, detail="Rule not found")
         
         new_status = not rule.get("active", True)
         db.safeguard_rules.update_one(
-            {"_id": ObjectId(rule_id)},
+            {"_id": ObjectId(rule_id), "user_id": username},
             {"$set": {"active": new_status}}
         )
         
-        updated = db.safeguard_rules.find_one({"_id": ObjectId(rule_id)})
+        updated = db.safeguard_rules.find_one({"_id": ObjectId(rule_id), "user_id": username})
         return serialize_doc(updated)
     except HTTPException:
         raise
@@ -755,9 +866,9 @@ async def toggle_safeguard(rule_id: str, request: Request):
 @app.delete("/api/safeguards/{rule_id}")
 async def delete_safeguard(rule_id: str, request: Request):
     """Delete a safeguard rule"""
-    require_auth(request)
+    username = require_auth(request)
     try:
-        result = db.safeguard_rules.delete_one({"_id": ObjectId(rule_id)})
+        result = db.safeguard_rules.delete_one({"_id": ObjectId(rule_id), "user_id": username})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Rule not found")
         return {"status": "deleted", "id": rule_id}
@@ -768,8 +879,9 @@ async def delete_safeguard(rule_id: str, request: Request):
 @app.post("/api/safeguards/manual")
 async def add_manual_safeguard(request: Request, data: SafeguardRuleCreate):
     """Add a manual safeguard rule"""
-    require_auth(request)
+    username = require_auth(request)
     doc = {
+        "user_id": username,
         "rule_text": data.rule_text,
         "severity": data.severity.value,
         "confidence": data.confidence,
@@ -790,15 +902,15 @@ async def add_manual_safeguard(request: Request, data: SafeguardRuleCreate):
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats(request: Request):
     """Get dashboard summary stats"""
-    require_auth(request)
-    holdings_count = db.holdings.count_documents({})
-    trades_count = db.trades.count_documents({})
+    username = require_auth(request)
+    holdings_count = db.holdings.count_documents({"user_id": username})
+    trades_count = db.trades.count_documents({"user_id": username})
     signals_count = db.signals.count_documents({})
-    rules_count = db.safeguard_rules.count_documents({"active": True})
+    rules_count = db.safeguard_rules.count_documents({"active": True, "user_id": username})
     news_count = db.news_cache.count_documents({})
     
-    wins = db.trades.count_documents({"result": "WIN"})
-    losses = db.trades.count_documents({"result": "LOSS"})
+    wins = db.trades.count_documents({"result": "WIN", "user_id": username})
+    losses = db.trades.count_documents({"result": "LOSS", "user_id": username})
     win_rate = round((wins / (wins + losses) * 100), 1) if (wins + losses) > 0 else 0
     
     return {
@@ -826,7 +938,7 @@ DEFAULT_EXPIRIES = [300, 600, 900]  # 5min, 10min, 15min in seconds
 @app.get("/api/signals/scan")
 async def scan_signals(request: Request):
     """Manually trigger a scan of all configured pairs"""
-    require_auth(request)
+    username = require_auth(request)
     try:
         # Fetch price data for all pairs
         price_data = fetch_multi(DEFAULT_PAIRS, interval="1m")
@@ -838,7 +950,7 @@ async def scan_signals(request: Request):
 
         # Get context for AI filter
         news_items = list(db.news_cache.find().sort("fetched_at", DESCENDING).limit(10))
-        safeguard_rules_list = list(db.safeguard_rules.find({"active": True}))
+        safeguard_rules_list = list(db.safeguard_rules.find({"active": True, "user_id": username}))
 
         approved_signals = []
         for sig in raw_signals:
@@ -846,7 +958,7 @@ async def scan_signals(request: Request):
 
             # Get recent trades for this asset
             recent_trades = list(
-                db.trades.find({"asset": symbol}).sort("created_at", DESCENDING).limit(10)
+                db.trades.find({"asset": symbol, "user_id": username}).sort("created_at", DESCENDING).limit(10)
             )
 
             # AI filter
@@ -864,6 +976,7 @@ async def scan_signals(request: Request):
             # Save to signals collection
             signal_doc = {
                 **sig,
+                "user_id": username,
                 "source": "quantum_brain",
                 "received_at": datetime.now().isoformat(),
                 "logged_as_trade": False
@@ -878,7 +991,8 @@ async def scan_signals(request: Request):
                 db,
                 interaction_type="signal_generated",
                 content=f"{sig['direction']} {symbol} | Confluence: {sig['confluence_score']}/6 | Confidence: {sig['confidence']}% | AI: {'OK' if sig['approved'] else 'BLOCKED'}",
-                tags=["signal", symbol, sig["direction"]]
+                tags=["signal", symbol, sig["direction"]],
+                user_id=username
             )
 
         return {
@@ -897,8 +1011,8 @@ async def scan_signals(request: Request):
 @app.get("/api/signals/performance")
 async def get_signal_performance(request: Request):
     """Get signal accuracy stats by indicator and pair"""
-    require_auth(request)
-    trades = list(db.trades.find({"result": {"$in": ["WIN", "LOSS"]}}).limit(500))
+    username = require_auth(request)
+    trades = list(db.trades.find({"user_id": username, "result": {"$in": ["WIN", "LOSS"]}}).limit(500))
     perf = calculate_indicator_performance(trades)
 
     # Per-pair stats
@@ -940,15 +1054,20 @@ async def get_supported_pairs(request: Request):
 @app.post("/api/tinkoff/sync")
 async def tinkoff_sync(request: Request):
     """Sync portfolio from Tinkoff Investments"""
-    require_auth(request)
+    username = require_auth(request)
+    user = db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    token = (user.get("tinkoff_token") or "").strip()
     try:
-        result = sync_portfolio(db)
+        result = sync_portfolio(db, token=token, user_id=username)
         if "error" not in result:
             log_memory(
                 db,
                 interaction_type="tinkoff_sync",
                 content=f"Synced {result.get('holdings_synced', 0)} positions from Tinkoff. Total value: {result.get('total_portfolio_value', 0)} RUB",
-                tags=["tinkoff", "portfolio_sync"]
+                tags=["tinkoff", "portfolio_sync"],
+                user_id=username
             )
         return result
     except Exception as e:
@@ -959,8 +1078,12 @@ async def tinkoff_sync(request: Request):
 @app.get("/api/tinkoff/status")
 async def tinkoff_connection_status(request: Request):
     """Check Tinkoff connection status"""
-    require_auth(request)
-    return get_tinkoff_status()
+    username = require_auth(request)
+    user = db.users.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    token = (user.get("tinkoff_token") or "").strip()
+    return get_tinkoff_status(token=token)
 
 
 if __name__ == "__main__":

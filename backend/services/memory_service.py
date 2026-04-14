@@ -56,7 +56,8 @@ def log_memory(
     interaction_type: str,
     content: str,
     outcome: Optional[str] = None,
-    tags: List[str] = None
+    tags: List[str] = None,
+    user_id: Optional[str] = None
 ) -> Dict:
     """Log a memory entry"""
     entry = {
@@ -64,6 +65,7 @@ def log_memory(
         "content": content,
         "outcome": outcome,
         "tags": tags or [],
+        "user_id": user_id,
         "created_at": datetime.now().isoformat(),
     }
     result = db.memory.insert_one(entry)
@@ -71,13 +73,14 @@ def log_memory(
     return entry
 
 
-def save_safeguard_rules(db, rules: List[Dict]) -> List[Dict]:
+def save_safeguard_rules(db, rules: List[Dict], user_id: Optional[str] = None) -> List[Dict]:
     """Save AI-generated safeguard rules"""
     saved = []
     for rule in rules:
         if "error" in rule:
             continue
         doc = {
+            "user_id": user_id,
             "rule_text": rule.get("rule_text", ""),
             "severity": rule.get("severity", "medium"),
             "confidence": rule.get("confidence", 0.5),

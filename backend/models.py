@@ -120,3 +120,18 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     username: str
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+    tinkoff_token: Optional[str] = None
+
+
+class UserPasswordUpdate(BaseModel):
+    password: str
+
+
+class UserTinkoffTokenUpdate(BaseModel):
+    tinkoff_token: Optional[str] = None

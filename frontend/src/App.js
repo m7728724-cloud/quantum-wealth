@@ -7,14 +7,14 @@ import {
   RefreshCw, Plus, Trash2, TrendingUp, TrendingDown,
   AlertTriangle, CheckCircle, Clock, Search, ExternalLink,
   ChevronDown, X, Activity, Eye, ArrowUpRight, ArrowDownRight,
-  BarChart3, PieChart as PieChartIcon, Target
+  BarChart3, PieChart as PieChartIcon, Target, Users
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip as RTooltip, ResponsiveContainer, Legend, AreaChart, Area
 } from 'recharts';
-import { authAPI, portfolioAPI, newsAPI, aiAPI, signalsAPI, tradesAPI, safeguardsAPI, dashboardAPI, tinkoffAPI } from './lib/api';
+import { authAPI, usersAPI, portfolioAPI, newsAPI, aiAPI, signalsAPI, tradesAPI, memoryAPI, safeguardsAPI, dashboardAPI, tinkoffAPI } from './lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -45,8 +45,7 @@ function LoginPage({ onLogin }) {
     try {
       const res = await authAPI.login(username, password);
       localStorage.setItem('qw_token', res.data.access_token);
-      localStorage.setItem('qw_user', res.data.username);
-      onLogin(res.data.username);
+      await onLogin();
       toast.success('Access Granted');
     } catch (err) {
       const msg = err.response?.data?.detail || 'Authentication failed';
@@ -119,7 +118,7 @@ function LoginPage({ onLogin }) {
 // ============================================
 // Sidebar Navigation
 // ============================================
-const NAV_ITEMS = [
+const BASE_NAV_ITEMS = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Главная', path: '/' },
   { id: 'portfolio', icon: Briefcase, label: 'Портфель', path: '/portfolio' },
   { id: 'news', icon: Newspaper, label: 'Новости', path: '/news' },
@@ -129,9 +128,12 @@ const NAV_ITEMS = [
   { id: 'memory', icon: ShieldAlert, label: 'Правила', path: '/memory' },
 ];
 
-function Sidebar({ onLogout }) {
+function Sidebar({ onLogout, currentUser }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const navItems = currentUser?.role === 'admin'
+    ? [...BASE_NAV_ITEMS, { id: 'users', icon: Users, label: 'Пользователи', path: '/users' }]
+    : BASE_NAV_ITEMS;
 
   return (
     <TooltipProvider delayDuration={100}>
@@ -140,7 +142,7 @@ function Sidebar({ onLogout }) {
           <Zap className="w-5 h-5 text-cyan-400" />
         </div>
         <div className="flex flex-col gap-1 flex-1">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <Tooltip key={item.id}>
               <TooltipTrigger asChild>
                 <button
@@ -176,7 +178,7 @@ function Sidebar({ onLogout }) {
 // ============================================
 // Top Bar
 // ============================================
-function TopBar({ username, pageTitle }) {
+function TopBar({ username, pageTitle, role }) {
   return (
     <div className="top-bar">
       <div className="top-bar-title">
@@ -189,6 +191,9 @@ function TopBar({ username, pageTitle }) {
         </span>
         <Badge variant="outline" className="text-xs font-mono-data">
           {username}
+        </Badge>
+        <Badge variant="outline" className="text-xs font-mono-data">
+          {role === 'admin' ? 'admin' : 'user'}
         </Badge>
       </div>
     </div>
@@ -2110,10 +2115,132 @@ function MemoryPage() {
   );
 }
 
+function UsersPage({ currentUser }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('user');
+  const [token, setToken] = useState('');
+  const [passwordDrafts, setPasswordDrafts] = useState({});
+  const [tokenDrafts, setTokenDrafts] = useState({});
+
+  const loadUsers = useCallback(async () => {
+    try {
+      const res = await usersAPI.list();
+      setUsers(res.data || []);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Ошибка загрузки пользователей');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentUser?.role === 'admin') loadUsers();
+  }, [currentUser, loadUsers]);
+
+  if (currentUser?.role !== 'admin') {
+    return <div className="empty-state"><p className="text-sm">Доступ только для администратора</p></div>;
+  }
+
+  const handleCreate = async () => {
+    if (!username.trim() || !password.trim()) return;
+    try {
+      await usersAPI.create({ username: username.trim(), password, role, tinkoff_token: token || null });
+      toast.success('Пользователь создан');
+      setUsername(''); setPassword(''); setRole('user'); setToken('');
+      loadUsers();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Ошибка создания пользователя');
+    }
+  };
+
+  const handleUpdatePassword = async (targetUsername) => {
+    const newPassword = passwordDrafts[targetUsername] || '';
+    if (!newPassword.trim()) return;
+    try {
+      await usersAPI.updatePassword(targetUsername, newPassword.trim());
+      toast.success('Пароль обновлен');
+      setPasswordDrafts((prev) => ({ ...prev, [targetUsername]: '' }));
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Ошибка обновления пароля');
+    }
+  };
+
+  const handleUpdateToken = async (targetUsername) => {
+    try {
+      await usersAPI.updateTinkoffToken(targetUsername, tokenDrafts[targetUsername] || '');
+      toast.success('Токен Тинькофф обновлен');
+      loadUsers();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Ошибка обновления токена');
+    }
+  };
+
+  return (
+    <div className="terminal-panel h-full flex flex-col">
+      <div className="panel-header">
+        <div className="panel-header-title">
+          <Users className="w-4 h-4 text-cyan-400" />
+          <span>Пользователи</span>
+        </div>
+      </div>
+      <div className="panel-body space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <Input placeholder="Логин" value={username} onChange={(e) => setUsername(e.target.value)} />
+          <Input type="password" placeholder="Пароль" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <Select value={role} onValueChange={setRole}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="user">user</SelectItem>
+              <SelectItem value="admin">admin</SelectItem>
+            </SelectContent>
+          </Select>
+          <Input placeholder="Тинькофф токен (опц.)" value={token} onChange={(e) => setToken(e.target.value)} />
+        </div>
+        <Button size="sm" onClick={handleCreate}><Plus className="w-3 h-3 mr-1" />Создать пользователя</Button>
+        <ScrollArea className="h-[60vh]">
+          {loading ? <div className="spinner" /> : (
+            <table className="bloomberg-table">
+              <thead>
+                <tr>
+                  <th>Логин</th><th>Роль</th><th>Тинькофф</th><th>Пароль</th><th>Токен</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id}>
+                    <td>{u.username}</td>
+                    <td><Badge variant="outline">{u.role}</Badge></td>
+                    <td>{u.has_tinkoff_token ? 'назначен' : 'не задан'}</td>
+                    <td>
+                      <div className="flex gap-1">
+                        <Input type="password" placeholder="Новый пароль" value={passwordDrafts[u.username] || ''} onChange={(e) => setPasswordDrafts((prev) => ({ ...prev, [u.username]: e.target.value }))} />
+                        <Button size="sm" variant="outline" onClick={() => handleUpdatePassword(u.username)}>Сменить</Button>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="flex gap-1">
+                        <Input placeholder="Токен" value={tokenDrafts[u.username] || ''} onChange={(e) => setTokenDrafts((prev) => ({ ...prev, [u.username]: e.target.value }))} />
+                        <Button size="sm" variant="outline" onClick={() => handleUpdateToken(u.username)}>Сохранить</Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </ScrollArea>
+      </div>
+    </div>
+  );
+}
+
 // ============================================
 // Main App Shell
 // ============================================
-function AppShell({ username, onLogout }) {
+function AppShell({ currentUser, onLogout }) {
   const location = useLocation();
   const [stats, setStats] = useState(null);
 
@@ -2131,14 +2258,17 @@ function AppShell({ username, onLogout }) {
     return () => clearInterval(interval);
   }, []);
 
-  const currentPage = NAV_ITEMS.find(n => n.path === location.pathname);
+  const navItems = currentUser?.role === 'admin'
+    ? [...BASE_NAV_ITEMS, { id: 'users', icon: Users, label: 'Пользователи', path: '/users' }]
+    : BASE_NAV_ITEMS;
+  const currentPage = navItems.find(n => n.path === location.pathname);
   const pageTitle = currentPage?.label || 'Dashboard';
 
   return (
     <div className="app-shell">
-      <Sidebar onLogout={onLogout} />
+      <Sidebar onLogout={onLogout} currentUser={currentUser} />
       <div className="main-area">
-        <TopBar username={username} pageTitle={pageTitle} />
+        <TopBar username={currentUser?.username} role={currentUser?.role} pageTitle={pageTitle} />
         <div className="content-area">
           <Routes>
             <Route path="/" element={<DashboardPage />} />
@@ -2148,6 +2278,7 @@ function AppShell({ username, onLogout }) {
             <Route path="/signals" element={<SignalsPage />} />
             <Route path="/trades" element={<TradesPage />} />
             <Route path="/memory" element={<MemoryPage />} />
+            {currentUser?.role === 'admin' && <Route path="/users" element={<UsersPage currentUser={currentUser} />} />}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
@@ -2161,10 +2292,21 @@ function AppShell({ username, onLogout }) {
 // Root App
 // ============================================
 function App() {
-  const [user, setUser] = useState(localStorage.getItem('qw_user'));
+  const [user, setUser] = useState(() => {
+    const raw = localStorage.getItem('qw_user');
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  });
 
-  const handleLogin = (username) => {
-    setUser(username);
+  const handleLogin = async () => {
+    const me = await authAPI.me();
+    const profile = me.data;
+    localStorage.setItem('qw_user', JSON.stringify(profile));
+    setUser(profile);
   };
 
   const handleLogout = () => {
@@ -2189,7 +2331,7 @@ function App() {
         }}
       />
       {user ? (
-        <AppShell username={user} onLogout={handleLogout} />
+        <AppShell currentUser={user} onLogout={handleLogout} />
       ) : (
         <Routes>
           <Route path="*" element={<LoginPage onLogin={handleLogin} />} />

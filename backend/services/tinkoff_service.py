@@ -7,29 +7,29 @@ from typing import List, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
-def _get_token():
-    return os.environ.get("TINKOFF_TOKEN", "")
+def _get_token(explicit_token: Optional[str] = None):
+    return explicit_token or os.environ.get("TINKOFF_TOKEN", "")
 
 
-def sync_portfolio(db) -> Dict[str, Any]:
+def sync_portfolio(db, token: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Fetch portfolio from Tinkoff and sync to MongoDB holdings collection."""
-    token = _get_token()
+    token = _get_token(token)
     if not token:
         return {"error": "TINKOFF_TOKEN not configured", "holdings": []}
 
     try:
         # Try tinvest (v3) first, then tinkoff_invest (v1)
-        return _sync_via_tinvest(db, token)
+        return _sync_via_tinvest(db, token, user_id=user_id)
     except Exception as e1:
         logger.warning(f"tinvest failed: {e1}, trying tinkoff_invest...")
         try:
-            return _sync_via_tinkoff_invest(db, token)
+            return _sync_via_tinkoff_invest(db, token, user_id=user_id)
         except Exception as e2:
             logger.error(f"Both methods failed: tinvest={e1}, tinkoff_invest={e2}")
-            return _sync_via_rest_api(db, token)
+            return _sync_via_rest_api(db, token, user_id=user_id)
 
 
-def _sync_via_rest_api(db, token: str) -> Dict[str, Any]:
+def _sync_via_rest_api(db, token: str, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Fallback: use Tinkoff REST API directly via httpx"""
     import httpx
 
@@ -89,6 +89,7 @@ def _sync_via_rest_api(db, token: str) -> Dict[str, Any]:
                 asset_class = "liquidity_fund" if is_liq else _map_asset_class(instrument_type)
 
                 holding = {
+                    "user_id": user_id,
                     "isin": isin_val or figi,
                     "secid": ticker or figi,
                     "shortname": name or ticker or figi,
@@ -106,7 +107,7 @@ def _sync_via_rest_api(db, token: str) -> Dict[str, Any]:
                 }
 
                 db.holdings.update_one(
-                    {"figi": figi},
+                    {"figi": figi, "user_id": user_id},
                     {"$set": holding},
                     upsert=True
                 )
@@ -156,7 +157,7 @@ def _resolve_instrument_rest(client, headers, base_url, figi, instrument_type):
     return (figi, figi, "")
 
 
-def _sync_via_tinvest(db, token):
+def _sync_via_tinvest(db, token, user_id: Optional[str] = None):
     """Try using tinvest package"""
     import tinvest
     tink = tinvest.SyncClient(token)
@@ -165,14 +166,14 @@ def _sync_via_tinvest(db, token):
     raise ImportError("tinvest requires pydantic-settings")
 
 
-def _sync_via_tinkoff_invest(db, token):
+def _sync_via_tinkoff_invest(db, token, user_id: Optional[str] = None):
     """Try using tinkoff_invest package"""
     raise ImportError("tinkoff_invest v1 has incompatible API - using REST fallback")
 
 
-def get_tinkoff_status() -> Dict[str, Any]:
+def get_tinkoff_status(token: Optional[str] = None) -> Dict[str, Any]:
     """Check if Tinkoff connection is configured and working"""
-    token = _get_token()
+    token = _get_token(token)
     if not token:
         return {"connected": False, "reason": "TINKOFF_TOKEN not set"}
 
