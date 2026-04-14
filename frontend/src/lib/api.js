@@ -65,6 +65,15 @@ export const signalsAPI = {
   getSignals: (limit) => api.get('/api/signals', { params: { limit } }),
   deleteSignal: (id) => api.delete(`/api/signals/${id}`),
   sendWebhook: (data) => api.post('/api/signals/webhook', data),
+  scanSignals: () => api.get('/api/signals/scan'),
+  getPerformance: () => api.get('/api/signals/performance'),
+  getSupportedPairs: () => api.get('/api/signals/supported-pairs'),
+};
+
+// Tinkoff
+export const tinkoffAPI = {
+  sync: () => api.post('/api/tinkoff/sync'),
+  getStatus: () => api.get('/api/tinkoff/status'),
 };
 
 // Trades

@@ -14,7 +14,7 @@ import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip as RTooltip, ResponsiveContainer, Legend, AreaChart, Area
 } from 'recharts';
-import { authAPI, portfolioAPI, newsAPI, aiAPI, signalsAPI, tradesAPI, safeguardsAPI, dashboardAPI } from './lib/api';
+import { authAPI, portfolioAPI, newsAPI, aiAPI, signalsAPI, tradesAPI, safeguardsAPI, dashboardAPI, tinkoffAPI } from './lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -1114,11 +1114,15 @@ function AIInsightsPage() {
 }
 
 // ============================================
-// Signals Page (TradingView Webhooks)
+// Signals Page (Quantum Brain + TradingView Webhooks)
 // ============================================
 function SignalsPage() {
   const [signals, setSignals] = useState([]);
+  const [brainSignals, setBrainSignals] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [activeTab, setActiveTab] = useState('brain');
+  const [scanResult, setScanResult] = useState(null);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [testSymbol, setTestSymbol] = useState('EURUSD');
   const [testAction, setTestAction] = useState('BUY');
@@ -1131,11 +1135,33 @@ function SignalsPage() {
   const loadSignals = async () => {
     try {
       const res = await signalsAPI.getSignals(50);
-      setSignals(res.data);
+      const allSigs = res.data || [];
+      // Separate brain signals from TV signals
+      setBrainSignals(allSigs.filter(s => s.source === 'quantum_brain'));
+      setSignals(allSigs.filter(s => s.source !== 'quantum_brain'));
     } catch (err) {
       console.error('Signals error:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleScan = async () => {
+    setScanning(true);
+    setScanResult(null);
+    try {
+      const res = await signalsAPI.scanSignals();
+      setScanResult(res.data);
+      if (res.data.signals && res.data.signals.length > 0) {
+        setBrainSignals(prev => [...res.data.signals, ...prev]);
+        toast.success(`Found ${res.data.signals.length} signal(s)!`);
+      } else {
+        toast.info('No confluence signals right now. Market may be quiet or closed.');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Scan failed');
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -1151,7 +1177,6 @@ function SignalsPage() {
       });
       toast.success('Test signal sent');
       setTestDialogOpen(false);
-      // Small delay before refreshing to ensure dialog closes properly
       setTimeout(() => loadSignals(), 300);
     } catch (err) {
       toast.error('Failed to send test signal');
@@ -1161,11 +1186,12 @@ function SignalsPage() {
   const handleLogTrade = async (signal) => {
     try {
       await tradesAPI.createTrade({
-        asset: signal.symbol,
-        direction: signal.action === 'BUY' || signal.action === 'CALL' ? 'CALL' : 'PUT',
-        expiry_seconds: 60,
+        asset: signal.symbol || signal.asset,
+        direction: signal.direction || (signal.action === 'BUY' || signal.action === 'CALL' ? 'CALL' : 'PUT'),
+        expiry_seconds: signal.expiry_options ? signal.expiry_options[0] : 300,
         signal_id: signal.id,
-        notes: `From TV signal: ${signal.indicator || 'unknown'}`,
+        notes: `Quantum Brain | Confluence: ${signal.confluence_score || 0}/6 | Confidence: ${signal.confidence || 0}%`,
+        indicators_triggered: signal.indicators_triggered || [],
       });
       toast.success('Trade logged from signal');
       loadSignals();
@@ -1179,119 +1205,303 @@ function SignalsPage() {
       <div className="panel-header">
         <div className="panel-header-title">
           <Radar className="w-4 h-4 text-cyan-400" />
-          <span>TradingView Signals</span>
-          <Badge variant="outline" className="text-xs font-mono-data">{signals.length}</Badge>
+          <span>Signal Command Center</span>
         </div>
         <div className="flex items-center gap-2">
+          {activeTab === 'brain' && (
+            <Button
+              size="sm"
+              className="h-7 text-xs bg-gradient-to-r from-cyan-500/20 to-blue-500/20 border border-cyan-500/40 text-cyan-400 hover:from-cyan-500/30 hover:to-blue-500/30"
+              onClick={handleScan}
+              disabled={scanning}
+              data-testid="signals-scan-button"
+            >
+              {scanning ? (
+                <>
+                  <span className="spinner w-3 h-3 mr-1" />
+                  Scanning 6 pairs...
+                </>
+              ) : (
+                <>
+                  <Zap className="w-3 h-3 mr-1" />
+                  Quantum Scan
+                </>
+              )}
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
             className="h-7 text-xs"
             onClick={loadSignals}
-            data-testid="signals-refresh-button"
           >
             <RefreshCw className="w-3 h-3 mr-1" />Refresh
           </Button>
-          <Dialog open={testDialogOpen} onOpenChange={setTestDialogOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="signals-test-webhook-button">
-                <Plus className="w-3 h-3 mr-1" />Test Signal
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="bg-card border-border max-w-sm">
-              <DialogHeader>
-                <DialogTitle>Send Test Webhook Signal</DialogTitle>
-                <DialogDescription className="text-xs text-muted-foreground">
-                  Simulate a TradingView webhook signal
-                </DialogDescription>
-              </DialogHeader>
-              <div className="space-y-3 py-2">
-                <div>
-                  <label className="text-xs text-muted-foreground">Symbol</label>
-                  <Input value={testSymbol} onChange={(e) => setTestSymbol(e.target.value.toUpperCase())} className="font-mono-data" />
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground">Action</label>
-                  <Select value={testAction} onValueChange={setTestAction}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="BUY">BUY (CALL)</SelectItem>
-                      <SelectItem value="SELL">SELL (PUT)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground">Timeframe</label>
-                  <Select value={testTimeframe} onValueChange={setTestTimeframe}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="M1">M1</SelectItem>
-                      <SelectItem value="M5">M5</SelectItem>
-                      <SelectItem value="M15">M15</SelectItem>
-                      <SelectItem value="H1">H1</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setTestDialogOpen(false)} className="text-xs">Cancel</Button>
-                <Button onClick={handleTestWebhook} className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 text-xs">
-                  Send Signal
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
         </div>
       </div>
 
+      {/* Tab Switcher */}
+      <div className="flex border-b border-border">
+        <button
+          className={`px-4 py-2 text-xs font-medium transition-colors ${activeTab === 'brain' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('brain')}
+        >
+          <Zap className="w-3 h-3 inline mr-1" />
+          Quantum Brain
+        </button>
+        <button
+          className={`px-4 py-2 text-xs font-medium transition-colors ${activeTab === 'tv' ? 'text-cyan-400 border-b-2 border-cyan-400' : 'text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('tv')}
+        >
+          <Radar className="w-3 h-3 inline mr-1" />
+          TV Webhooks
+        </button>
+      </div>
+
       <ScrollArea className="flex-1">
-        <div className="panel-body space-y-2">
-          {loading ? (
-            <div className="flex items-center justify-center py-12"><div className="spinner" /></div>
-          ) : signals.length === 0 ? (
-            <div className="empty-state">
-              <Radar className="w-10 h-10 opacity-30" />
-              <p className="text-sm">No signals received</p>
-              <p className="text-xs text-muted-foreground">Webhook URL: POST /api/signals/webhook</p>
-            </div>
-          ) : (
-            signals.map((sig) => (
-              <div key={sig.id} className="signal-card" data-testid="signals-signal-card">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-mono-data text-sm font-semibold">{sig.symbol}</span>
-                      <Badge className={`text-[10px] ${sig.action === 'BUY' || sig.action === 'CALL' ? 'badge-buy' : 'badge-sell'}`}>
-                        {sig.action}
-                      </Badge>
-                      {sig.timeframe && (
-                        <Badge variant="outline" className="text-[10px]">{sig.timeframe}</Badge>
+        <div className="panel-body space-y-3">
+          {/* === QUANTUM BRAIN TAB === */}
+          {activeTab === 'brain' && (
+            <>
+              {/* Scan Result Summary */}
+              {scanResult && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="text-xs text-muted-foreground">Pairs scanned:</div>
+                      <span className="text-sm font-mono-data text-cyan-400">{scanResult.total_scanned}</span>
+                      <div className="text-xs text-muted-foreground">Signals found:</div>
+                      <span className="text-sm font-mono-data text-green-400">{scanResult.total_generated}</span>
+                      <div className="text-xs text-muted-foreground">AI Approved:</div>
+                      <span className="text-sm font-mono-data text-amber-400">{scanResult.total_approved}</span>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground font-mono-data">{scanResult.timestamp}</span>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Info panel when empty */}
+              {!scanning && brainSignals.length === 0 && (
+                <div className="empty-state py-8">
+                  <Zap className="w-10 h-10 opacity-30 text-cyan-400" />
+                  <p className="text-sm mt-3">Quantum Signal Brain</p>
+                  <p className="text-xs text-muted-foreground mt-1">6 indicators × 6 forex pairs = confluence signals</p>
+                  <p className="text-xs text-muted-foreground">EURUSD · USDJPY · AUDUSD · AUDJPY · EURJPY · USDCAD</p>
+                  <p className="text-xs text-cyan-400/60 mt-3">Press "Quantum Scan" to analyze</p>
+                </div>
+              )}
+
+              {scanning && (
+                <div className="flex flex-col items-center justify-center py-12 gap-3">
+                  <div className="spinner" />
+                  <p className="text-xs text-muted-foreground animate-pulse">Analyzing 6 pairs across 6 indicators...</p>
+                  <p className="text-[10px] text-muted-foreground">RSI · MACD · Bollinger · EMA Cross · ATR · Stochastic</p>
+                </div>
+              )}
+
+              {/* Brain Signal Cards */}
+              {brainSignals.map((sig, idx) => (
+                <motion.div
+                  key={sig.id || idx}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: idx * 0.05 }}
+                  className={`p-4 rounded-lg border ${sig.approved !== false ? 'border-cyan-500/20 bg-cyan-500/5' : 'border-red-500/20 bg-red-500/5'}`}
+                  data-testid="brain-signal-card"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      {/* Header: Symbol + Direction */}
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="font-mono-data text-lg font-bold">{sig.symbol}</span>
+                        <Badge className={`text-xs px-2 py-0.5 ${sig.direction === 'CALL' ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'}`}>
+                          {sig.direction === 'CALL' ? '▲' : '▼'} {sig.direction}
+                        </Badge>
+                        <Badge variant="outline" className={`text-[10px] ${sig.strength === 'STRONG' ? 'border-amber-500/40 text-amber-400' : 'border-blue-500/30 text-blue-400'}`}>
+                          {sig.strength || 'MODERATE'}
+                        </Badge>
+                        {sig.approved === false && (
+                          <Badge className="text-[10px] bg-red-500/20 text-red-400 border-red-500/30">
+                            AI BLOCKED
+                          </Badge>
+                        )}
+                      </div>
+
+                      {/* Confluence Score Bar */}
+                      <div className="mb-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Confluence</span>
+                          <span className="text-xs font-mono-data text-cyan-400">{sig.confluence_score}/{sig.max_possible || 6}</span>
+                        </div>
+                        <div className="flex gap-1">
+                          {Array.from({ length: sig.max_possible || 6 }).map((_, i) => (
+                            <div
+                              key={i}
+                              className={`h-2 flex-1 rounded-sm ${i < (sig.confluence_score || 0) ? (sig.direction === 'CALL' ? 'bg-green-400' : 'bg-red-400') : 'bg-secondary'}`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Indicators */}
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {(sig.indicators_triggered || []).map((ind, i) => (
+                          <Badge key={i} variant="outline" className="text-[10px] py-0">
+                            {typeof ind === 'string' ? ind : ind.name}
+                          </Badge>
+                        ))}
+                      </div>
+
+                      {/* Price + Stats Row */}
+                      <div className="flex items-center gap-4 text-[10px] text-muted-foreground font-mono-data">
+                        <span>Price: {sig.price?.toFixed(5) || '—'}</span>
+                        <span>RSI: {sig.rsi || '—'}</span>
+                        <span>Stoch: {sig.stochastic_k || '—'}</span>
+                        <span>Conf: {sig.confidence || 0}%</span>
+                      </div>
+
+                      {/* AI Filter Info */}
+                      {sig.ai_filter && (
+                        <div className={`mt-2 text-[10px] flex items-center gap-1 ${sig.ai_filter.approved ? 'text-green-400' : 'text-red-400'}`}>
+                          {sig.ai_filter.approved ? <CheckCircle className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                          {sig.ai_filter.reason || (sig.ai_filter.approved ? 'AI: Signal approved' : 'AI: Signal blocked')}
+                        </div>
+                      )}
+
+                      <div className="text-[10px] text-muted-foreground font-mono-data mt-1">
+                        {sig.received_at || sig.timestamp}
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="flex flex-col gap-1 shrink-0">
+                      {sig.approved !== false && !sig.logged_as_trade && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs border-green-500/30 text-green-400 hover:bg-green-500/10"
+                          onClick={() => handleLogTrade(sig)}
+                        >
+                          <NotebookPen className="w-3 h-3 mr-1" />
+                          Log Trade
+                        </Button>
+                      )}
+                      {sig.logged_as_trade && (
+                        <Badge className="badge-win text-[10px]">Logged</Badge>
                       )}
                     </div>
-                    {sig.indicator && <p className="text-xs text-muted-foreground">{sig.indicator}</p>}
-                    {sig.price && <p className="text-xs font-mono-data">Price: {sig.price}</p>}
-                    <p className="text-[10px] text-muted-foreground font-mono-data mt-1">{sig.received_at}</p>
                   </div>
-                  <div className="flex flex-col gap-1">
-                    {!sig.logged_as_trade && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs border-green-500/30 text-green-400 hover:bg-green-500/10"
-                        onClick={() => handleLogTrade(sig)}
-                        data-testid="signals-log-trade-button"
-                      >
-                        <NotebookPen className="w-3 h-3 mr-1" />
-                        Log Trade
+                </motion.div>
+              ))}
+            </>
+          )}
+
+          {/* === TV WEBHOOKS TAB === */}
+          {activeTab === 'tv' && (
+            <>
+              <div className="flex justify-end">
+                <Dialog open={testDialogOpen} onOpenChange={setTestDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="signals-test-webhook-button">
+                      <Plus className="w-3 h-3 mr-1" />Test Signal
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="bg-card border-border max-w-sm">
+                    <DialogHeader>
+                      <DialogTitle>Send Test Webhook Signal</DialogTitle>
+                      <DialogDescription className="text-xs text-muted-foreground">
+                        Simulate a TradingView webhook signal
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-3 py-2">
+                      <div>
+                        <label className="text-xs text-muted-foreground">Symbol</label>
+                        <Input value={testSymbol} onChange={(e) => setTestSymbol(e.target.value.toUpperCase())} className="font-mono-data" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground">Action</label>
+                        <Select value={testAction} onValueChange={setTestAction}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="BUY">BUY (CALL)</SelectItem>
+                            <SelectItem value="SELL">SELL (PUT)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground">Timeframe</label>
+                        <Select value={testTimeframe} onValueChange={setTestTimeframe}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="M1">M1</SelectItem>
+                            <SelectItem value="M5">M5</SelectItem>
+                            <SelectItem value="M15">M15</SelectItem>
+                            <SelectItem value="H1">H1</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setTestDialogOpen(false)} className="text-xs">Cancel</Button>
+                      <Button onClick={handleTestWebhook} className="bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 text-xs">
+                        Send Signal
                       </Button>
-                    )}
-                    {sig.logged_as_trade && (
-                      <Badge className="badge-win text-[10px]">Logged</Badge>
-                    )}
-                  </div>
-                </div>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </div>
-            ))
+
+              {loading ? (
+                <div className="flex items-center justify-center py-12"><div className="spinner" /></div>
+              ) : signals.length === 0 ? (
+                <div className="empty-state">
+                  <Radar className="w-10 h-10 opacity-30" />
+                  <p className="text-sm">No TV webhook signals</p>
+                  <p className="text-xs text-muted-foreground">Webhook URL: POST /api/signals/webhook</p>
+                </div>
+              ) : (
+                signals.map((sig) => (
+                  <div key={sig.id} className="signal-card" data-testid="signals-signal-card">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-mono-data text-sm font-semibold">{sig.symbol}</span>
+                          <Badge className={`text-[10px] ${sig.action === 'BUY' || sig.action === 'CALL' ? 'badge-buy' : 'badge-sell'}`}>
+                            {sig.action}
+                          </Badge>
+                          {sig.timeframe && (
+                            <Badge variant="outline" className="text-[10px]">{sig.timeframe}</Badge>
+                          )}
+                        </div>
+                        {sig.indicator && <p className="text-xs text-muted-foreground">{sig.indicator}</p>}
+                        {sig.price && <p className="text-xs font-mono-data">Price: {sig.price}</p>}
+                        <p className="text-[10px] text-muted-foreground font-mono-data mt-1">{sig.received_at}</p>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        {!sig.logged_as_trade && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs border-green-500/30 text-green-400 hover:bg-green-500/10"
+                            onClick={() => handleLogTrade(sig)}
+                          >
+                            <NotebookPen className="w-3 h-3 mr-1" />
+                            Log Trade
+                          </Button>
+                        )}
+                        {sig.logged_as_trade && (
+                          <Badge className="badge-win text-[10px]">Logged</Badge>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </>
           )}
         </div>
       </ScrollArea>
