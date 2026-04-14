@@ -151,8 +151,8 @@ function Sidebar({ onLogout }) {
                   <item.icon className="w-5 h-5" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="right" className="bg-card border-border">
-                <p className="text-xs">{item.label}</p>
+              <TooltipContent side="right" className="bg-zinc-900 border border-cyan-500/30 text-white shadow-lg shadow-cyan-500/10 px-3 py-1.5">
+                <p className="text-xs font-medium">{item.label}</p>
               </TooltipContent>
             </Tooltip>
           ))}
@@ -164,8 +164,8 @@ function Sidebar({ onLogout }) {
               <LogOut className="w-5 h-5" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="right" className="bg-card border-border">
-            <p className="text-xs">Logout</p>
+          <TooltipContent side="right" className="bg-zinc-900 border border-cyan-500/30 text-white shadow-lg shadow-cyan-500/10 px-3 py-1.5">
+            <p className="text-xs font-medium">Выход</p>
           </TooltipContent>
         </Tooltip>
       </div>
@@ -945,7 +945,7 @@ function AIInsightsPage() {
           data-testid="ai-analyze-button"
         >
           {loading ? <span className="spinner w-4 h-4 mr-1" /> : <BrainCircuit className="w-3 h-3 mr-1" />}
-          {loading ? 'Analyzing...' : 'Analyze Portfolio'}
+          {loading ? 'Анализирую...' : 'Анализ портфеля'}
         </Button>
       </div>
 
@@ -953,11 +953,11 @@ function AIInsightsPage() {
         <div className="panel-body space-y-4">
           {/* Custom prompt */}
           <div className="space-y-2">
-            <label className="text-xs text-muted-foreground">Custom Focus (optional)</label>
+            <label className="text-xs text-muted-foreground">Дополнительный фокус (необязательно)</label>
             <Textarea
               value={customPrompt}
               onChange={(e) => setCustomPrompt(e.target.value)}
-              placeholder="E.g., Focus on bond exposure risk..."
+              placeholder="Например, обратить внимание на риски облигаций..."
               className="h-16 text-xs resize-none"
             />
           </div>
@@ -965,9 +965,9 @@ function AIInsightsPage() {
           {!insight && !loading && (
             <div className="empty-state">
               <BrainCircuit className="w-10 h-10 opacity-30" />
-              <p className="text-sm">No analysis generated yet</p>
-              <p className="text-xs text-muted-foreground">Click "Analyze Portfolio" to generate AI insights</p>
-              <p className="text-xs text-muted-foreground">Ensure you have holdings in your portfolio first</p>
+              <p className="text-sm">Анализ ещё не выполнен</p>
+              <p className="text-xs text-muted-foreground">Нажмите «Анализ портфеля» для AI рекомендаций</p>
+              <p className="text-xs text-muted-foreground">Убедитесь, что в портфеле есть бумаги</p>
             </div>
           )}
 
