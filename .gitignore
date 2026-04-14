@@ -93,3 +93,14 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Deploy scripts (may contain credentials)
+deploy_*.py
+update_*.py
+fix_vps*.py
+check_*.py
+test_*.py
+vps_*.py
+find_*.py
+list_*.py
+start_vps*.py
